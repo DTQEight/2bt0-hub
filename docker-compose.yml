@@ -17,8 +17,6 @@ services:
       TZ: "Asia/Shanghai"
       # 让 Python 的字节码缓存也落到 E 盘，不写容器可写层
       PYTHONPYCACHEPREFIX: /data/tmp/pycache
-      # 每日增量更新的触发小时（容器本地时间，TZ=Asia/Shanghai 即北京时间）
-      SYNC_HOUR: "3"
     volumes:
       # 全部运行数据（日志/样本/临时文件/数据库）都留在本机 E 盘项目目录
       - ./data:/data

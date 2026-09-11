@@ -1,0 +1,26 @@
+# NAS 部署用：直接拉取 GitHub Actions 构建好的镜像，无需本地构建
+#
+# 用法：
+#   1. 把本文件放到 NAS 上任意目录（如 /volume1/docker/2bt0-hub/）
+#   2. cd 到该目录，执行：docker compose -f docker-compose.nas.yml up -d
+#   3. 浏览器打开 http://<NAS的IP>:8000
+#
+# 镜像公开，不需要 docker login；支持 linux/amd64 与 linux/arm64。
+
+services:
+  resource-hub:
+    image: ghcr.io/dtqeight/2bt0-hub:latest
+    container_name: resource-hub
+    restart: unless-stopped
+    ports:
+      # 左边是 NAS 对外端口，被占用就改（如 "8321:8000"）
+      # 右边 8000 是容器内端口，不要改
+      - "8000:8000"
+    environment:
+      DATA_DIR: /data
+      # 必须设置：定时任务按容器本地时间触发，不设则为 UTC，会差 8 小时
+      TZ: Asia/Shanghai
+    volumes:
+      # 数据库与日志的持久化目录，可改成 NAS 上的绝对路径
+      # 如 /volume1/docker/2bt0-hub/data
+      - ./data:/data
