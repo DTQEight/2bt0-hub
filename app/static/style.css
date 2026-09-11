@@ -230,6 +230,29 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .pager .gap { color: var(--muted); padding: 0 4px; }
 
+.pager-jump { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; }
+
+.pager-jump input {
+  width: 76px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  text-align: center;
+  outline: none;
+}
+
+.pager-jump input:focus { border-color: var(--accent); }
+
+.pager-jump input::-webkit-outer-spin-button,
+.pager-jump input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 /* ---- 同步管理页 ---- */
 
 .sync-grid {

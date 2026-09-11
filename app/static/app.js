@@ -207,6 +207,28 @@ function buildPager(page, totalPages) {
   }
 
   add("下一页 ›", page + 1, { disabled: page >= totalPages });
+
+  // 页码跳转（2bt0 接口不返回真实总页数，total_pages 恒为当前页+1，故只有本地库限定上界）
+  const bounded = state.tab === "local";
+  const jump = document.createElement("span");
+  jump.className = "pager-jump";
+  jump.innerHTML = `<input type="number" min="1"${bounded ? ` max="${totalPages}"` : ""}
+    value="${page}" aria-label="跳转到指定页码" /><button type="button">跳转</button>`;
+  const input = jump.querySelector("input");
+  const go = () => {
+    let n = Math.floor(Number(input.value));
+    if (!Number.isFinite(n) || n < 1) { input.value = String(page); return; }
+    if (bounded) n = Math.min(n, totalPages);
+    if (n === page) { input.value = String(page); return; }
+    state.page = n;
+    load();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  jump.querySelector("button").addEventListener("click", go);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); go(); }
+  });
+  el.pager.appendChild(jump);
 }
 
 // ---- 同步管理页（全量 / 增量 / ETA / 统计） ----
