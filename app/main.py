@@ -11,9 +11,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from db import count_all, get_sync_progress, init_db, upsert_items
+from db import get_sync_progress, init_db, upsert_items
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
-from sources import SourceError, get_source, list_sources
+from sources import SourceError, get_source
 from sources.bt0 import SECTIONS
 from sync import sync_manager
 
@@ -57,11 +57,6 @@ async def health() -> dict:
     return {"status": "ok", "data_dir": str(DATA_DIR)}
 
 
-@app.get("/api/sources")
-async def sources() -> dict:
-    return {"sources": list_sources()}
-
-
 @app.get("/api/items")
 async def items(
     page: int = Query(1, ge=1),
@@ -86,12 +81,7 @@ async def items(
     return result.to_dict()
 
 
-# ---- 本地库统计与 2bt0 全量同步 ----
-
-@app.get("/api/db/stats")
-async def db_stats() -> dict:
-    return {"total": count_all()}
-
+# ---- 2bt0 全量同步 ----
 
 @app.post("/api/sync/start")
 async def sync_start(body: dict) -> dict:

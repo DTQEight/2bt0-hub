@@ -37,20 +37,18 @@ MODE_LABELS = {"full": "全量抓取", "resume": "断点续抓", "update": "增�
 
 
 def _fetch_page(sc: int, page: int):
-    """抓单页原始数据，返回 (rows, full, err)"""
+    """抓单页原始数据，返回 (rows, err)"""
     try:
-        data = api_get("getTList", {"sc": sc, "page": page})
-        rows = data.get("list") or []
-        limit = int(data.get("limit") or 20) or 20
-        return rows, len(rows) >= limit, None
+        rows = api_get("getTList", {"sc": sc, "page": page}).get("list") or []
+        return rows, None
     except Exception as exc:
-        return [], False, str(exc)
+        return [], str(exc)
 
 
 def _really_end(sc: int, page: int) -> bool:
     """连续空页后向远处探查，全部为空才确认板块结束（防中途数据空洞）"""
     for gap in (1, 5, 20, 100):
-        rows, _, err = _fetch_page(sc, page + gap)
+        rows, err = _fetch_page(sc, page + gap)
         if rows or err:  # 远处有数据，或网络异常无法确认 → 不结束
             return False
     return True
@@ -64,7 +62,7 @@ def _probe_total_pages(sc: int, stop: threading.Event) -> int:
     def has(page: int) -> bool:
         if stop.is_set():
             return True  # 让循环尽快收敛退出
-        rows, _, _ = _fetch_page(sc, page)
+        rows, _ = _fetch_page(sc, page)
         return bool(rows)
 
     if not has(1):
@@ -194,9 +192,9 @@ class SyncManager:
                                for p in range(page, page + workers)]
                     batch = sorted((f.result() + (p,) for f, p in
                                     zip(futures, range(page, page + workers))),
-                                   key=lambda t: t[3])
+                                   key=lambda t: t[2])
                     end = False
-                    for rows, full, err, p in batch:
+                    for rows, err, p in batch:
                         if end or self._stop.is_set():
                             break
                         if err:

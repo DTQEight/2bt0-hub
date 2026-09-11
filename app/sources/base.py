@@ -63,14 +63,6 @@ class Source(ABC):
         """
         raise NotImplementedError
 
-    async def get_magnet(self, item_id: str) -> dict:
-        """按需获取单条资源的磁力链接（子类可选实现）。
-
-        :param item_id: Item.id
-        :return: 至少包含 magnet 字段，可附带 name / info_hash / trackers 等
-        """
-        raise SourceError(f"数据源 {self.name} 不支持按需获取磁力链接")
-
 
 class SourceError(RuntimeError):
     """数据源抓取失败。"""

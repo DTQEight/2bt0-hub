@@ -26,10 +26,6 @@ def get_source(name: str) -> Source:
     return REGISTRY[name]()
 
 
-def list_sources() -> list[dict[str, str]]:
-    return [{"name": n, "label": c.label} for n, c in REGISTRY.items()]
-
-
 from . import bt0  # noqa: E402,F401  触发注册
 from . import local  # noqa: E402,F401  触发注册
 
@@ -41,5 +37,4 @@ __all__ = [
     "REGISTRY",
     "register",
     "get_source",
-    "list_sources",
 ]

@@ -47,7 +47,6 @@ SECTIONS = {1: "电影", 2: "电视剧"}
 
 def api_get(endpoint: str, params: dict) -> dict:
     """调用 2bt0 JSON API（该站 TLS 不稳定，带重试）"""
-    last_exc = None
     for attempt in range(RETRIES + 1):
         try:
             r = requests.get(
@@ -57,33 +56,34 @@ def api_get(endpoint: str, params: dict) -> dict:
                 timeout=(15, 45),
                 verify=False,  # 该站证书链不完整
             )
-            data = r.json()
+            try:
+                data = r.json()
+            except ValueError as exc:
+                # requests 的 JSONDecodeError 同时继承 RequestException，
+                # 必须在内层单独捕获，否则会被下面的网络重试分支误判为重试
+                raise SourceError(f"2bt0 接口返回非 JSON: {exc}") from exc
             if not data.get("success"):
                 raise SourceError(f"接口返回错误: {data.get('message') or data}")
             return data.get("data") or {}
         except SourceError:
             raise
         except requests.exceptions.RequestException as exc:
-            last_exc = exc
             if attempt < RETRIES:
                 time.sleep(1.5 * (attempt + 1))
                 continue
             raise SourceError(f"2bt0 接口请求失败（已重试 {RETRIES} 次）: {exc}") from exc
-        except ValueError as exc:
-            raise SourceError(f"2bt0 接口返回非 JSON: {exc}") from exc
-    raise SourceError(f"2bt0 接口请求失败: {last_exc}")
 
 
-def fetch_list(section: int, page: int) -> tuple[list[Item], bool]:
-    """抓取某板块一页种子列表。返回 (items, 是否满页)。
+def fetch_list(section: int, page: int) -> list[Item]:
+    """抓取某板块一页种子列表（页可能为空，表示越界或站点数据空洞）。
 
-    该站 API 的 total 字段不可信（恒 400），满页即认为还有下一页。
+    该站 API 的 total 字段不可信（恒 400），所以不返回总页数，
+    由同步器按"连续空页"判定板块末尾。
     """
     data = api_get("getTList", {"sc": section, "page": page})
     rows = data.get("list") or []
-    limit = int(data.get("limit") or PAGE_SIZE) or PAGE_SIZE
 
-    items = [Item(
+    return [Item(
         id=str(r.get("id") or ""),
         title=r.get("zname") or r.get("title") or "（无标题）",
         magnet=(r.get("zlink") or "").strip(),
@@ -92,7 +92,6 @@ def fetch_list(section: int, page: int) -> tuple[list[Item], bool]:
         category=SECTIONS[section],
         detail_url=BASE + r["aurl"] if r.get("aurl") else "",
     ) for r in rows]
-    return items, len(rows) >= limit
 
 
 def _search(keyword: str, page: int) -> PageResult:
@@ -135,7 +134,7 @@ class Bt0Source(Source):
         if q:
             return await asyncio.to_thread(_search, q, page)
         sc = section if section in SECTIONS else 1
-        items, full = await asyncio.to_thread(fetch_list, sc, page)
+        items = await asyncio.to_thread(fetch_list, sc, page)
         return PageResult(
             # 该站 total 不可信，且存在中途短页（如某页仅 19 条），
             # 始终允许翻下一页；真正的末尾（越界页返回空）由前端提示"未找到"

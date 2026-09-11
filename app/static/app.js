@@ -132,7 +132,7 @@ function renderList(data) {
     const li = document.createElement("li");
     li.className = "empty";
     li.textContent = state.tab === "local"
-      ? "本地库为空，去电影 / 电视剧页浏览或点击“同步到本地库”"
+      ? "本地库为空。在电影 / 电视剧页浏览会自动入库，也可在「同步」页启动全量同步"
       : "没有匹配的结果";
     el.list.appendChild(li);
     return;

@@ -62,10 +62,16 @@ CREATE TABLE IF NOT EXISTS magnets (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_magnets_title ON magnets(title);
-CREATE INDEX IF NOT EXISTS idx_magnets_source ON magnets(source);
 CREATE INDEX IF NOT EXISTS idx_magnets_category ON magnets(category);
 CREATE INDEX IF NOT EXISTS idx_magnets_last_seen ON magnets(last_seen_at);
+-- 只保留真正被查询用到的两个索引：
+--   category     → get_stats() 的 GROUP BY category
+--   last_seen_at → get_stats() 的 MAX(last_seen_at)
+-- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索是
+-- LIKE '%kw%'（前置通配符无法走 B-tree 索引），也没有按 source 过滤的语句。
+-- 二者在 82 万行时占用约 93MB 并拖慢每行写入，故不再创建，并清理存量。
+DROP INDEX IF EXISTS idx_magnets_title;
+DROP INDEX IF EXISTS idx_magnets_source;
 CREATE TABLE IF NOT EXISTS sync_state (
     key TEXT PRIMARY KEY,
     last_page INTEGER NOT NULL,
@@ -197,11 +203,6 @@ def query_items(page: int = 1, keyword: str = "", page_size: int = 20):
             [*params, page_size, offset],
         ).fetchall()
     return rows, total
-
-
-def count_all() -> int:
-    with _db() as conn:
-        return conn.execute("SELECT COUNT(*) FROM magnets").fetchone()[0]
 
 
 _STATS_TTL = 15  # 秒：库统计缓存时长（避免高频轮询反复全表扫描）
