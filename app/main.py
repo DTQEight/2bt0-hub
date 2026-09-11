@@ -20,7 +20,6 @@ from sync import sync_manager
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-DEFAULT_SOURCE = os.getenv("SOURCE", "bt0")
 
 for sub in ("logs", "db", "tmp"):
     (DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
@@ -55,12 +54,12 @@ app = FastAPI(title="2bt0 资源库", docs_url="/api/docs", openapi_url="/api/op
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "data_dir": str(DATA_DIR), "default_source": DEFAULT_SOURCE}
+    return {"status": "ok", "data_dir": str(DATA_DIR)}
 
 
 @app.get("/api/sources")
 async def sources() -> dict:
-    return {"sources": list_sources(), "default": DEFAULT_SOURCE}
+    return {"sources": list_sources()}
 
 
 @app.get("/api/items")
@@ -70,7 +69,7 @@ async def items(
     source: str = Query("bt0", max_length=50),
     sc: int = Query(1, ge=1, le=2, description="板块：1=电影 2=电视剧"),
 ) -> dict:
-    name = source or DEFAULT_SOURCE
+    name = source
     try:
         result = await get_source(name).fetch_page(page=page, query=q.strip(), section=sc)
     except SourceError as exc:

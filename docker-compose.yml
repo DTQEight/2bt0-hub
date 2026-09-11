@@ -14,7 +14,6 @@ services:
       - "127.0.0.1:8001:8000"
     environment:
       DATA_DIR: /data
-      SOURCE: "${SOURCE:-bt0}"
       TZ: "Asia/Shanghai"
       # 让 Python 的字节码缓存也落到 E 盘，不写容器可写层
       PYTHONPYCACHEPREFIX: /data/tmp/pycache

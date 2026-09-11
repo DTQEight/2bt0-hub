@@ -3,7 +3,7 @@
 新增数据源步骤：
 1. 在本目录新建模块，实现 base.Source 子类；
 2. 在下面的 REGISTRY 中注册；
-3. 在 .env 里把 SOURCE 改成对应的 name（或运行时通过网页顶部下拉框切换）。
+3. 如需在网页上使用，在 app.js 的 TABS 中加一个 tab 指向该数据源的 name。
 """
 
 from __future__ import annotations
