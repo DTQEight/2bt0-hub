@@ -78,8 +78,11 @@ CREATE TABLE IF NOT EXISTS movies (
     episodes TEXT DEFAULT '',
     long_time TEXT DEFAULT '',
     doub_score TEXT DEFAULT '',
+    doub_votes TEXT DEFAULT '',
     imdb_id TEXT DEFAULT '',
     imdb_score TEXT DEFAULT '',
+    imdb_votes TEXT DEFAULT '',
+    image TEXT DEFAULT '',
     director TEXT DEFAULT '',
     performer TEXT DEFAULT '',
     abstract TEXT DEFAULT '',
@@ -130,6 +133,10 @@ def init_db() -> None:
             for name in ("movie_id", "movie_title"):
                 if name not in cols:
                     conn.execute(f"ALTER TABLE magnets ADD COLUMN {name} TEXT DEFAULT ''")
+            vcols = {r["name"] for r in conn.execute("PRAGMA table_info(movies)")}
+            for name in ("doub_votes", "imdb_votes", "image"):
+                if name not in vcols:
+                    conn.execute(f"ALTER TABLE movies ADD COLUMN {name} TEXT DEFAULT ''")
             conn.executescript(_INDEXES)
 
 
@@ -306,8 +313,9 @@ def get_stats() -> dict:
 
 # 与 movies 表列一一对应（idcode 是主键，其余为详情字段）
 _MOVIE_FIELDS = ("idcode", "title", "otitle", "alias", "years", "category", "area",
-                 "language", "episodes", "long_time", "doub_score", "imdb_id",
-                 "imdb_score", "director", "performer", "abstract")
+                 "language", "episodes", "long_time", "doub_score", "doub_votes",
+                 "imdb_id", "imdb_score", "imdb_votes", "image",
+                 "director", "performer", "abstract")
 
 
 def upsert_movies(rows: list[dict]) -> int:

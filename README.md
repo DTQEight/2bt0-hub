@@ -90,7 +90,7 @@ app/
 
 影片级元数据按 `idcode` 唯一。一部影片平均对应十余个种子版本，长文本（简介、主演）只存一份。
 
-`idcode`、`title`、`otitle`、`alias`、`years`、`category`、`area`、`language`、`episodes`、`long_time`、`doub_score`、`imdb_id`、`imdb_score`、`director`、`performer`、`abstract`、`fetched_at`
+`idcode`（即豆瓣 subject id，可拼 `movie.douban.com/subject/{idcode}/`）、`title`、`otitle`、`alias`、`years`、`category`、`area`、`language`、`episodes`、`long_time`、`doub_score`、`doub_votes`（评价人数）、`imdb_id`、`imdb_score`、`imdb_votes`、`image`（海报 URL）、`director`、`performer`、`abstract`、`fetched_at`
 
 ### 其他表
 

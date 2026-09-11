@@ -322,24 +322,43 @@ async function renderMovieHead() {
   head.querySelector("[data-back]").addEventListener("click", backToGroups);
 }
 
+// 评价人数格式化：649314 → "64.9万人评价"，999 → "999人评价"
+function fmtVotes(v) {
+  const n = Number(v);
+  if (!n || Number.isNaN(n)) return "";
+  return n >= 10000 ? `${(n / 10000).toFixed(1)}万人评价` : `${n}人评价`;
+}
+
 function movieHeadHtml(m) {
   const line = [m.years, m.category, m.area, m.language].filter(Boolean).join(" · ");
-  const scores = [];
-  // 站点用 0 / "@" 表示"暂无评分"，这类值不展示
-  if (m.doub_score && m.doub_score !== "0") scores.push(`豆瓣 ${m.doub_score}`);
-  if (m.imdb_score && m.imdb_score !== "0") scores.push(`IMDB ${m.imdb_score}`);
-  if (m.imdb_id) scores.push(m.imdb_id);
+  // 评分段：豆瓣/IMDB 均带外链（站点 idcode 即豆瓣 subject id）
+  const segs = [];
+  if (m.doub_score && m.doub_score !== "0") {
+    const votes = fmtVotes(m.doub_votes);
+    segs.push(`<a class="mh-link" href="https://movie.douban.com/subject/${encodeURIComponent(m.idcode)}/" target="_blank" rel="noopener noreferrer">豆瓣 ${escapeHtml(m.doub_score)}${votes ? `（${votes}）` : ""} ↗</a>`);
+  }
+  if (m.imdb_score && m.imdb_score !== "0" && m.imdb_id) {
+    const votes = fmtVotes(m.imdb_votes);
+    segs.push(`<a class="mh-link" href="https://www.imdb.com/title/${encodeURIComponent(m.imdb_id)}/" target="_blank" rel="noopener noreferrer">IMDB ${escapeHtml(m.imdb_score)}${votes ? `（${votes}）` : ""} ↗</a>`);
+  } else if (m.imdb_id) {
+    segs.push(`<a class="mh-link" href="https://www.imdb.com/title/${encodeURIComponent(m.imdb_id)}/" target="_blank" rel="noopener noreferrer">${escapeHtml(m.imdb_id)} ↗</a>`);
+  }
   const body = [
     m.otitle ? `<div class="mh-sub">${escapeHtml(m.otitle)}${m.alias ? `　别名：${escapeHtml(m.alias)}` : ""}</div>` : "",
     line ? `<div class="mh-line">${escapeHtml(line)}</div>` : "",
-    scores.length ? `<div class="mh-line mh-score">${escapeHtml(scores.join(" · "))}</div>` : "",
+    segs.length ? `<div class="mh-line mh-score">${segs.join(" · ")}</div>` : "",
     m.director ? `<div class="mh-line"><b>导演</b>${escapeHtml(m.director)}</div>` : "",
     m.performer ? `<div class="mh-line"><b>主演</b>${escapeHtml(m.performer)}</div>` : "",
     m.abstract ? `<div class="mh-abstract">${escapeHtml(m.abstract)}</div>` : "",
   ].filter(Boolean).join("");
+  // 海报（站点图床外链，懒加载；无海报时不占位）
+  const poster = m.image && /^https?:\/\//i.test(m.image)
+    ? `<img class="mh-poster" src="${escapeHtml(m.image)}" loading="lazy" alt="海报" referrerpolicy="no-referrer">`
+    : "";
   return `
     <div class="movie-head">
       <div class="mh-top">
+        ${poster}
         <div>
           <div class="mh-title">${escapeHtml(m.title || state.movieTitle || "（无标题）")}</div>
           ${body}

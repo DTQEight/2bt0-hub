@@ -314,6 +314,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .mh-score { color: var(--green); }
 
+/* 评分外链（豆瓣/IMDB）与海报 */
+.mh-link { color: var(--green); text-decoration: none; }
+.mh-link:hover { text-decoration: underline; }
+
+.mh-poster {
+  width: 96px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  align-self: flex-start;
+}
+
 .mh-abstract {
   margin-top: 10px;
   padding-top: 10px;

@@ -115,8 +115,9 @@ _DETAIL_MAP = {
     "title": "title", "otitle": "otitle", "alias": "alias", "years": "years",
     "class": "category", "production_area": "area", "language": "language",
     "episodes": "episodes", "long_time": "long_time", "doub_score": "doub_score",
-    "IMDB_number": "imdb_id", "IMDB_score": "imdb_score", "director": "director",
-    "performer": "performer", "abstract": "abstract",
+    "doub_score_peo_num": "doub_votes", "IMDB_score_peo_num": "imdb_votes",
+    "image": "image", "IMDB_number": "imdb_id", "IMDB_score": "imdb_score",
+    "director": "director", "performer": "performer", "abstract": "abstract",
 }
 
 
