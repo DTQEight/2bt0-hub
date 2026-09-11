@@ -62,9 +62,11 @@ CREATE TABLE IF NOT EXISTS magnets (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_magnets_id ON magnets(id);
 CREATE INDEX IF NOT EXISTS idx_magnets_category ON magnets(category);
 CREATE INDEX IF NOT EXISTS idx_magnets_last_seen ON magnets(last_seen_at);
--- 只保留真正被查询用到的两个索引：
+-- 索引用途说明：
+--   id           → 分页"定位本页首行"（覆盖索引，只扫约 10MB；否则深页要全表扫约 300MB）
 --   category     → get_stats() 的 GROUP BY category
 --   last_seen_at → get_stats() 的 MAX(last_seen_at)
 -- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索是
@@ -198,10 +200,22 @@ def query_items(page: int = 1, keyword: str = "", page_size: int = 20):
     with _db() as conn:
         total = conn.execute(
             f"SELECT COUNT(*) FROM magnets WHERE {where}", params).fetchone()[0]
-        rows = conn.execute(
-            f"SELECT * FROM magnets WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
-            [*params, page_size, offset],
-        ).fetchall()
+        if keyword:
+            # 关键词是 LIKE '%kw%'，无法走索引，两步法反而要多扫一遍，保持单次查询
+            rows = conn.execute(
+                f"SELECT * FROM magnets WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                [*params, page_size, offset],
+            ).fetchall()
+        else:
+            # 两步分页：先用 id 覆盖索引定位本页首行（只扫索引），再按 id 范围取整行。
+            # 直接 LIMIT/OFFSET 会让 SQLite 全表扫描并逐行丢弃，深页要读约 300MB。
+            anchor = conn.execute(
+                "SELECT id FROM magnets ORDER BY id DESC LIMIT 1 OFFSET ?", (offset,)
+            ).fetchone()
+            rows = [] if anchor is None else conn.execute(
+                "SELECT * FROM magnets WHERE id <= ? ORDER BY id DESC LIMIT ?",
+                (anchor[0], page_size),
+            ).fetchall()
     return rows, total
 
 
