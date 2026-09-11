@@ -12,9 +12,9 @@ const state = {
 };
 
 const TABS = {
-  movie: { source: "bt0", sc: 1, hint: "留空浏览最新电影种子（自带磁力）；输入片名搜索影片库…" },
-  tv: { source: "bt0", sc: 2, hint: "留空浏览最新电视剧种子（自带磁力）；输入片名搜索影片库…" },
-  local: { source: "local", sc: 0, hint: "搜索本地库已保存的磁力（标题 / hash / 分类），留空则按上方分类浏览…" },
+  movie: { source: "bt0", sc: 1, hint: "搜片名，留空浏览最新电影种子…" },
+  tv: { source: "bt0", sc: 2, hint: "搜片名，留空浏览最新电视剧种子…" },
+  local: { source: "local", sc: 0, hint: "搜本地库磁力（标题 / hash / 分类）…" },
   sync: {},
   logs: {},
 };
@@ -76,6 +76,7 @@ function switchTab(tab) {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   }
   const isList = ["movie", "tv", "local"].includes(tab);
+  el["search-form"].hidden = !isList; // 搜索栏嵌在顶栏，列表页才显示
   el["list-view"].hidden = !isList;
   el["sync-view"].hidden = tab !== "sync";
   el["logs-view"].hidden = tab !== "logs";
@@ -465,6 +466,21 @@ function fmtNum(n) {
   return Number(n || 0).toLocaleString("zh-CN");
 }
 
+// 顶栏徽标专用：压缩成「82.3万」，避免文案过长把顶栏挤成两行
+function fmtCompact(n) {
+  const v = Number(n || 0);
+  return v >= 10000 ? `${(v / 10000).toFixed(1)}万` : String(v);
+}
+
+// 顶栏徽标专用：ETA 压缩成「1小时40分」
+function fmtEtaShort(sec) {
+  if (sec == null) return "计算中";
+  if (sec < 3600) return `${Math.max(1, Math.round(sec / 60))}分`;
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return m ? `${h}小时${m}分` : `${h}小时`;
+}
+
 // 单个板块卡片
 function syncCardHtml(sc, s) {
   const label = SECTIONS[sc];
@@ -767,13 +783,13 @@ async function refreshSyncUI(notifyDone) {
       const modeText = s.mode === "update" ? "增量更新"
         : s.mode === "resume" ? "断点续抓" : "全量同步";
       const etaText = s.mode !== "update" && s.eta_seconds != null
-        ? ` · 剩余 ${fmtEta(s.eta_seconds)}` : "";
+        ? `·剩${fmtEtaShort(s.eta_seconds)}` : "";
       el["sync-badge-text"].textContent =
-        `${modeText} · ${s.section_label || `板块${s.section}`} 第 ${fmtNum(s.page)} 页 · 库内 ${fmtNum(s.db_total)}${etaText}`;
+        `${modeText}·${s.section_label || `板块${s.section}`} 第${fmtNum(s.page)}页·${fmtCompact(s.db_total)}条${etaText}`;
     } else {
-      const etaText = m.eta_seconds != null ? ` · 剩余 ${fmtEta(m.eta_seconds)}` : "";
+      const etaText = m.eta_seconds != null ? `·剩${fmtEtaShort(m.eta_seconds)}` : "";
       el["sync-badge-text"].textContent =
-        `影片详情 · 已拉取 ${fmtNum(m.done)} / ${fmtNum(m.total)} 部${etaText}`;
+        `影片详情 ${fmtCompact(m.done)}/${fmtCompact(m.total)}部${etaText}`;
     }
   } else {
     el["sync-badge"].hidden = true;

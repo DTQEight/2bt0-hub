@@ -58,6 +58,18 @@ start_scheduler()  # 每日定时增量更新（电影 + 电视剧）
 app = FastAPI(title="2bt0 资源库", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 
+@app.middleware("http")
+async def static_no_cache(request, call_next):
+    """静态资源禁用启发式缓存：不发 Cache-Control 时浏览器会把旧 JS
+    一直当新的用（更新镜像后页面行为不变就是这个原因）。
+    no-cache 仍带 ETag 协商，命中时回 304，代价极小。"""
+    resp = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "data_dir": str(DATA_DIR)}

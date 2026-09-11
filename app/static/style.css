@@ -36,21 +36,23 @@ body {
   z-index: 10;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 14px;
   padding: 12px 24px;
   background: rgba(13, 17, 23, 0.92);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  /* 不换行：同步徽标出现时也要保持单行（窄屏见文末媒体查询） */
+  flex-wrap: nowrap;
 }
 
-.brand { display: flex; align-items: center; gap: 10px; }
+.brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
 .brand h1 {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.5px;
+  white-space: nowrap;
 }
 
 .dot {
@@ -61,15 +63,16 @@ body {
   box-shadow: 0 0 8px var(--accent);
 }
 
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 4px; flex-wrap: nowrap; min-width: 0; flex-shrink: 1; }
 
 .tabs button {
-  padding: 7px 16px;
+  padding: 7px 12px;
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
   color: var(--muted);
   font-size: 14px;
+  white-space: nowrap;
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
@@ -95,11 +98,23 @@ body {
   background: var(--panel);
   font-size: 13px;
   color: var(--muted);
+  /* 可压缩：宽度不够时文字省略，保证顶栏单行 */
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.sync-badge #sync-badge-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .sync-badge .pulse {
   width: 8px;
   height: 8px;
+  flex-shrink: 0;
   border-radius: 50%;
   background: var(--green);
   animation: pulse 1.2s ease-in-out infinite;
@@ -112,6 +127,7 @@ body {
 
 .sync-badge button {
   padding: 3px 10px;
+  flex-shrink: 0;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
@@ -124,9 +140,23 @@ body {
 
 /* ---- 主体 ---- */
 
-main { max-width: 980px; margin: 0 auto; padding: 20px 24px 60px; }
+main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
 
 .searchbar { display: flex; gap: 8px; padding-bottom: 14px; flex-wrap: wrap; }
+
+/* 顶栏内嵌搜索框：填在 tabs 与同步徽标之间的空白处 */
+.topbar .searchbar {
+  flex: 1 1 180px;
+  max-width: 260px;
+  min-width: 130px;
+  padding-bottom: 0;
+  /* 输入框与按钮也保持单行，靠输入框收缩让位 */
+  flex-wrap: nowrap;
+}
+
+.topbar .searchbar input { min-width: 0; padding: 7px 12px; font-size: 13px; }
+
+.topbar .searchbar button { padding: 7px 14px; font-size: 13px; flex-shrink: 0; }
 
 .searchbar input {
   flex: 1;
@@ -595,6 +625,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* ---- 响应式 ---- */
+
+/* 窄屏允许换行，避免顶栏元素被压得过窄 */
+@media (max-width: 900px) {
+  .topbar { flex-wrap: wrap; }
+  .topbar .searchbar { max-width: none; }
+}
 
 @media (max-width: 640px) {
   .topbar { gap: 10px; padding: 10px 14px; }

@@ -19,6 +19,10 @@
       <button type="button" data-tab="sync">同步</button>
       <button type="button" data-tab="logs">日志</button>
     </nav>
+    <form id="search-form" class="searchbar" role="search" hidden>
+      <input id="q" type="search" autocomplete="off" />
+      <button type="submit">搜索</button>
+    </form>
     <div class="sync-badge" id="sync-badge" hidden>
       <span class="pulse" aria-hidden="true"></span>
       <span id="sync-badge-text"></span>
@@ -28,10 +32,6 @@
 
   <main>
     <section id="list-view">
-      <form id="search-form" class="searchbar" role="search">
-        <input id="q" type="search" autocomplete="off" />
-        <button type="submit">搜索</button>
-      </form>
       <div class="filters" id="filters">
         <div class="cat-filter" id="cat-filter" hidden>
           <button type="button" data-cat="电影">电影</button>
