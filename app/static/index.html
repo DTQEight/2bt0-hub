@@ -32,11 +32,19 @@
         <input id="q" type="search" autocomplete="off" />
         <button type="submit">搜索</button>
       </form>
-      <div class="cat-filter" id="cat-filter" hidden>
-        <button type="button" data-cat="电影">电影</button>
-        <button type="button" data-cat="电视剧">电视剧</button>
-        <button type="button" data-cat="">全部</button>
+      <div class="filters" id="filters">
+        <div class="cat-filter" id="cat-filter" hidden>
+          <button type="button" data-cat="电影">电影</button>
+          <button type="button" data-cat="电视剧">电视剧</button>
+          <button type="button" data-cat="">全部</button>
+        </div>
+        <div class="view-toggle" id="view-toggle" hidden>
+          <span class="vt-label">视图</span>
+          <button type="button" data-view="items">全部版本</button>
+          <button type="button" data-view="groups">按片名</button>
+        </div>
       </div>
+      <div id="movie-head"></div>
       <div id="status" class="status">加载中…</div>
       <ul id="list" class="list"></ul>
       <nav id="pager" class="pager" aria-label="分页"></nav>

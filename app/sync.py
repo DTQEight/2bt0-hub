@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from db import (clear_sync_progress, get_sync_done, get_sync_progress,
                 get_stats, set_sync_done, set_sync_progress, upsert_items)
-from sources.bt0 import BASE, SECTIONS, api_get
+from sources.bt0 import BASE, SECTIONS, api_get, movie_ref
 
 logger = logging.getLogger("resource-hub.sync")
 
@@ -269,6 +269,7 @@ class SyncManager:
             "published_at": r.get("eztime") or "",
             "category": label,
             "detail_url": BASE + r["aurl"] if r.get("aurl") else "",
+            "extra": movie_ref(r),
         } for r in rows]
         try:
             new_count = upsert_items("bt0", items)

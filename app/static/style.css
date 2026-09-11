@@ -17,6 +17,10 @@
 
 * { box-sizing: border-box; }
 
+/* 必须显式覆盖：作者样式里的 display（如 .cat-filter{display:flex}）
+   优先级高于浏览器默认的 [hidden]{display:none}，否则 hidden 会失效 */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -160,6 +164,37 @@ main { max-width: 980px; margin: 0 auto; padding: 20px 24px 60px; }
   background: var(--panel-2);
 }
 
+/* 筛选行：左侧分类，右侧视图切换 */
+.filters {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+
+.view-toggle .vt-label { color: var(--muted); font-size: 13px; }
+
+.view-toggle button {
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.view-toggle button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
 button, .act {
   padding: 8px 16px;
   border: 1px solid var(--border);
@@ -229,6 +264,68 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* 「按片名」分组卡片（整卡可点进该片的版本列表） */
+.group-card { cursor: pointer; }
+
+.group-card .card-title { font-size: 16px; }
+
+.ver-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* 影片信息卡（看某片版本时置顶显示） */
+.movie-head {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.mh-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mh-top > div { min-width: 0; flex: 1; }
+
+.mh-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+
+.mh-sub { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+
+.mh-line {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 5px;
+  line-height: 1.6;
+}
+
+.mh-line b { color: var(--text); font-weight: 600; margin-right: 6px; }
+
+.mh-score { color: var(--green); }
+
+.mh-abstract {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.75;
+  max-height: 132px;
+  overflow: hidden;
+}
+
+.mh-top .act { flex-shrink: 0; }
 
 .hash {
   font-family: var(--mono);

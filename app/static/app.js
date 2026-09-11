@@ -5,6 +5,9 @@ const state = {
   page: 1,
   q: "",
   localCategory: "电影", // 本地库默认只看电影，可切电视剧 / 全部
+  localView: "items", // items=全部版本 | groups=按片名分组
+  movieId: "", // 非空＝正在看某部影片的全部版本
+  movieTitle: "", // 该影片片名（分组接口带回，用于详情未拉取时兜底显示）
   prevRunning: false,
 };
 
@@ -20,9 +23,9 @@ const SECTIONS = { 1: "电影", 2: "电视剧" };
 
 const el = {};
 for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
-  "list-view", "cat-filter", "sync-view", "sync-grid", "schedule-card", "logs-view",
-  "log-box", "log-scroll", "log-refresh", "sync-badge", "sync-badge-text",
-  "sync-stop", "toast"]) {
+  "list-view", "cat-filter", "view-toggle", "movie-head", "sync-view", "sync-grid",
+  "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
+  "sync-badge", "sync-badge-text", "sync-stop", "toast"]) {
   el[id] = document.getElementById(id);
 }
 
@@ -67,6 +70,7 @@ function switchTab(tab) {
   state.tab = tab;
   state.page = 1;
   state.q = "";
+  state.movieId = "";
   el.q.value = "";
   for (const btn of el.tabs.querySelectorAll("button")) {
     btn.classList.toggle("active", btn.dataset.tab === tab);
@@ -98,13 +102,22 @@ function applySearchbar() {
   el.q.placeholder = t.hint || "搜索…";
 }
 
-// 分类筛选器只在「本地磁力库」页出现（在线页有各自独立的板块 tab）
+// 分类筛选器与"按片名"视图开关都只在「本地磁力库」页出现
 function applyCatFilter() {
   const isLocal = state.tab === "local";
   el["cat-filter"].hidden = !isLocal;
-  if (!isLocal) return;
+  el["view-toggle"].hidden = !isLocal;
+  if (!isLocal) {
+    el["movie-head"].replaceChildren();
+    return;
+  }
   for (const btn of el["cat-filter"].querySelectorAll("button")) {
     btn.classList.toggle("active", btn.dataset.cat === state.localCategory);
+  }
+  for (const btn of el["view-toggle"].querySelectorAll("button")) {
+    // 看某部影片的版本时两个视图都不选中
+    btn.classList.toggle("active",
+      !state.movieId && btn.dataset.view === state.localView);
   }
 }
 
@@ -113,15 +126,21 @@ function applyCatFilter() {
 async function load() {
   const t = TABS[state.tab];
   if (!t.source) return;
+  // 本地库「按片名」视图走独立接口（分组结果不是磁力条目）
+  if (state.tab === "local" && state.localView === "groups" && !state.movieId) {
+    return loadGroups();
+  }
   const params = new URLSearchParams({ source: t.source, page: state.page });
   if (t.sc) params.set("sc", t.sc);
   if (state.q) params.set("q", state.q);
   if (state.tab === "local" && state.localCategory) params.set("category", state.localCategory);
+  if (state.tab === "local" && state.movieId) params.set("movie_id", state.movieId);
 
   el.status.className = "status";
   el.status.textContent = "加载中…";
   el.list.replaceChildren();
   el.pager.replaceChildren();
+  renderMovieHead(); // 看某片版本时先渲染影片信息卡
 
   try {
     const res = await fetch(`/api/items?${params}`);
@@ -185,6 +204,152 @@ function buildCard(item) {
   const copyBtn = li.querySelector("button.copy");
   if (copyBtn) copyBtn.addEventListener("click", () => copyText(copyBtn.dataset.magnet));
   return li;
+}
+
+// ---- 本地库「按片名」分组视图 ----
+
+async function loadGroups() {
+  const params = new URLSearchParams({ page: state.page });
+  if (state.q) params.set("q", state.q);
+  if (state.localCategory) params.set("category", state.localCategory);
+
+  el.status.className = "status";
+  el.status.textContent = "加载中…";
+  el["movie-head"].replaceChildren();
+  el.list.replaceChildren();
+  el.pager.replaceChildren();
+
+  try {
+    const res = await fetch(`/api/groups?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    renderGroups(data);
+  } catch (err) {
+    el.status.className = "status error";
+    el.status.textContent = `加载失败：${err.message}`;
+  }
+}
+
+function renderGroups(data) {
+  const groups = data.groups || [];
+  const prefix = state.q
+    ? `搜索“${state.q}”命中 ${fmtNum(data.total_groups)} 部 · `
+    : `共 ${fmtNum(data.total_groups)} 部影片 · `;
+  el.status.textContent = `${prefix}第 ${data.page} / ${data.total_pages} 页`;
+
+  if (!groups.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = state.q ? "没有匹配的影片" : "本地库还没有影片数据（影片信息随同步一起入库）";
+    el.list.appendChild(li);
+    return;
+  }
+  for (const g of groups) el.list.appendChild(buildGroupCard(g));
+  buildPager(data.page, data.total_pages);
+}
+
+function buildGroupCard(g) {
+  const li = document.createElement("li");
+  li.className = "card group-card";
+  li.innerHTML = `
+    <div class="card-main">
+      <div class="card-title" title="${escapeHtml(g.movie_title)}">${escapeHtml(g.movie_title || `影片 ${g.movie_id}`)}</div>
+      <div class="card-meta"><span class="ver-badge">${fmtNum(g.versions)} 个版本</span></div>
+    </div>
+    <div class="card-actions"><button type="button" class="act">查看版本 ›</button></div>`;
+  const open = () => openMovie(g.movie_id, g.movie_title);
+  li.querySelector("button").addEventListener("click", open);
+  li.addEventListener("click", (e) => {
+    if (!e.target.closest("button")) open(); // 整卡可点
+  });
+  return li;
+}
+
+// 进入某部影片：切到该片的版本列表，并展示影片详情
+function openMovie(id, title) {
+  state.movieId = id;
+  state.movieTitle = title || "";
+  state.page = 1;
+  state.q = "";
+  el.q.value = "";
+  applyCatFilter();
+  load();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function backToGroups() {
+  state.movieId = "";
+  state.movieTitle = "";
+  state.page = 1;
+  state.localView = "groups";
+  applyCatFilter();
+  load();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// 影片信息卡：详情来自站点 getVideoDetail，由「同步」页的批量任务拉取后缓存在本地
+async function renderMovieHead() {
+  const head = el["movie-head"];
+  if (state.tab !== "local" || !state.movieId) {
+    head.replaceChildren();
+    return;
+  }
+  const id = state.movieId;
+  head.innerHTML = `<div class="movie-head"><div class="mh-top"><div>
+      <div class="mh-title">${escapeHtml(state.movieTitle || `影片 ${id}`)}</div>
+      <div class="mh-line">正在加载影片信息…</div>
+    </div><button type="button" class="act" data-back="1">← 返回片名列表</button></div></div>`;
+  head.querySelector("[data-back]").addEventListener("click", backToGroups);
+
+  let movie = null;
+  try {
+    const res = await fetch(`/api/movie/${encodeURIComponent(id)}`);
+    movie = (await res.json()).movie;
+  } catch { /* 取不到就按"无详情"渲染 */ }
+  if (state.movieId !== id) return; // 期间已切走，别覆盖新内容
+
+  head.innerHTML = movie ? movieHeadHtml(movie) : movieHeadEmptyHtml();
+  head.querySelector("[data-back]").addEventListener("click", backToGroups);
+}
+
+function movieHeadHtml(m) {
+  const line = [m.years, m.category, m.area, m.language].filter(Boolean).join(" · ");
+  const scores = [];
+  // 站点用 0 / "@" 表示"暂无评分"，这类值不展示
+  if (m.doub_score && m.doub_score !== "0") scores.push(`豆瓣 ${m.doub_score}`);
+  if (m.imdb_score && m.imdb_score !== "0") scores.push(`IMDB ${m.imdb_score}`);
+  if (m.imdb_id) scores.push(m.imdb_id);
+  const body = [
+    m.otitle ? `<div class="mh-sub">${escapeHtml(m.otitle)}${m.alias ? `　别名：${escapeHtml(m.alias)}` : ""}</div>` : "",
+    line ? `<div class="mh-line">${escapeHtml(line)}</div>` : "",
+    scores.length ? `<div class="mh-line mh-score">${escapeHtml(scores.join(" · "))}</div>` : "",
+    m.director ? `<div class="mh-line"><b>导演</b>${escapeHtml(m.director)}</div>` : "",
+    m.performer ? `<div class="mh-line"><b>主演</b>${escapeHtml(m.performer)}</div>` : "",
+    m.abstract ? `<div class="mh-abstract">${escapeHtml(m.abstract)}</div>` : "",
+  ].filter(Boolean).join("");
+  return `
+    <div class="movie-head">
+      <div class="mh-top">
+        <div>
+          <div class="mh-title">${escapeHtml(m.title || state.movieTitle || "（无标题）")}</div>
+          ${body}
+        </div>
+        <button type="button" class="act" data-back="1">← 返回片名列表</button>
+      </div>
+    </div>`;
+}
+
+function movieHeadEmptyHtml() {
+  return `
+    <div class="movie-head">
+      <div class="mh-top">
+        <div>
+          <div class="mh-title">${escapeHtml(state.movieTitle || `影片 ${state.movieId}`)}</div>
+          <div class="mh-line">详情尚未拉取 —— 可在「同步」页启动「拉取影片详情」，之后即会显示原名 / 年份 / 分类 / 评分</div>
+        </div>
+        <button type="button" class="act" data-back="1">← 返回片名列表</button>
+      </div>
+    </div>`;
 }
 
 function buildPager(page, totalPages) {
@@ -391,6 +556,48 @@ function scheduleCardHtml(cfg) {
     </div>`;
 }
 
+// 影片详情批量拉取卡片
+function movieTaskCardHtml(m) {
+  if (!m) return "";
+  const running = !!m.running;
+  const pending = Math.max(0, (m.wanted || 0) - (m.fetched || 0));
+  let badge, badgeCls;
+  if (running) { badge = "拉取中"; badgeCls = "run"; }
+  else if (m.wanted && !pending) { badge = "已完成"; badgeCls = "done"; }
+  else if (pending) { badge = `待拉取 ${fmtNum(pending)} 部`; badgeCls = "pause"; }
+  else { badge = "无数据"; badgeCls = "none"; }
+
+  const pct = running && m.total > 0
+    ? Math.min(100, (m.done / m.total) * 100).toFixed(1) : null;
+  const progressHtml = running
+    ? `<div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
+       <div class="progress-num">${pct}% · 已拉取 ${fmtNum(m.done)} / ${fmtNum(m.total)} 部</div>`
+    : "";
+  const runRows = running
+    ? `<div class="sync-row"><span>速度</span><span>${m.speed > 0 ? `${fmtNum(m.speed)} 部/分钟` : "采样中…"}</span></div>
+       <div class="sync-row"><span>预计剩余</span><span class="eta">${fmtEta(m.eta_seconds)}</span></div>`
+    : "";
+
+  return `
+    <div class="sync-card ${running ? "running" : ""}">
+      <div class="sync-card-head"><h3>影片详情</h3><span class="sbadge ${badgeCls}">${badge}</span></div>
+      ${progressHtml}
+      <div class="sync-rows">
+        ${runRows}
+        <div class="sync-row"><span>已入库影片</span><span>${fmtNum(m.fetched)} 部</span></div>
+        <div class="sync-row"><span>种子里涉及</span><span>${fmtNum(m.wanted)} 部</span></div>
+        ${m.message ? `<div class="sync-row"><span>最近一次</span><span>${escapeHtml(m.message)}</span></div>` : ""}
+      </div>
+      <div class="sync-actions">
+        <button type="button" class="primary" data-movie-fetch="1" ${
+          running || !pending ? "disabled" : ""}>${
+          running ? "拉取中…" : pending ? `拉取影片详情（${fmtNum(pending)} 部）` : "全部已拉取"}</button>
+        ${running ? `<button type="button" class="stop" data-movie-stop="1">停止</button>` : ""}
+      </div>
+      <div class="stats-hint">片名 / 原名 / 别名 / 年份 / 分类 / 豆瓣与 IMDB 评分 / 地区 / 导演 / 主演 / 简介。站点无批量接口，按影片逐个拉取（实测约 0.3 秒/部，4 线程并发）。</div>
+    </div>`;
+}
+
 async function loadSchedule() {
   let cfg;
   try {
@@ -428,9 +635,9 @@ async function saveSchedule(patch) {
   }
 }
 
-function renderSyncPage(s) {
+function renderSyncPage(s, m) {
   el["sync-grid"].innerHTML =
-    syncCardHtml(1, s) + syncCardHtml(2, s) + statsCardHtml(s);
+    syncCardHtml(1, s) + syncCardHtml(2, s) + statsCardHtml(s) + movieTaskCardHtml(m);
   // 绑定按钮事件（innerHTML 重建后需重绑）
   for (const btn of el["sync-grid"].querySelectorAll("[data-full]")) {
     btn.addEventListener("click", () => startSync(Number(btn.dataset.full)));
@@ -441,6 +648,29 @@ function renderSyncPage(s) {
   for (const btn of el["sync-grid"].querySelectorAll("[data-stop]")) {
     btn.addEventListener("click", stopSync);
   }
+  const fetchBtn = el["sync-grid"].querySelector("[data-movie-fetch]");
+  if (fetchBtn) fetchBtn.addEventListener("click", startMovieFetch);
+  const movieStopBtn = el["sync-grid"].querySelector("[data-movie-stop]");
+  if (movieStopBtn) movieStopBtn.addEventListener("click", stopMovieFetch);
+}
+
+async function startMovieFetch() {
+  try {
+    const res = await fetch("/api/movies/start", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast(`已开始拉取影片详情（共 ${fmtNum(data.total)} 部）`);
+  } catch (err) {
+    showToast(`启动失败：${err.message}`);
+  }
+  refreshSyncUI(false);
+}
+
+async function stopMovieFetch() {
+  try {
+    await fetch("/api/movies/stop", { method: "POST" });
+    showToast("正在停止影片详情拉取…");
+  } catch { /* 忽略 */ }
 }
 
 async function startSync(section, mode) {
@@ -463,10 +693,21 @@ async function startSync(section, mode) {
 }
 
 async function stopSync() {
+  // 顶栏停止按钮同时停两类后台任务（未在跑的调用是空操作）
   try {
-    await fetch("/api/sync/stop", { method: "POST" });
-    showToast("正在停止同步…");
+    await Promise.all([
+      fetch("/api/sync/stop", { method: "POST" }),
+      fetch("/api/movies/stop", { method: "POST" }),
+    ]);
+    showToast("正在停止后台任务…");
   } catch { /* 忽略 */ }
+}
+
+async function fetchMovieStatus() {
+  try {
+    const res = await fetch("/api/movies/status");
+    return await res.json();
+  } catch { return null; }
 }
 
 async function refreshSyncUI(notifyDone) {
@@ -475,20 +716,26 @@ async function refreshSyncUI(notifyDone) {
     const res = await fetch("/api/sync/status");
     s = await res.json();
   } catch { return; }
+  const m = await fetchMovieStatus();
+  const busy = s.running || !!(m && m.running);
 
   // 顶栏徽标（任何 tab 下都显示）
-  if (s.running) {
+  if (busy) {
     el["sync-badge"].hidden = false;
-    const modeText = s.mode === "update" ? "增量更新"
-      : s.mode === "resume" ? "断点续抓" : "全量同步";
-    const etaText = s.mode !== "update" && s.eta_seconds != null
-      ? ` · 剩余 ${fmtEta(s.eta_seconds)}` : "";
-    el["sync-badge-text"].textContent =
-      `${modeText} · ${s.section_label || `板块${s.section}`} 第 ${fmtNum(s.page)} 页 · 库内 ${fmtNum(s.db_total)}${etaText}`;
-    if (!syncTimer) syncTimer = setInterval(() => refreshSyncUI(true), 3000);
+    if (s.running) {
+      const modeText = s.mode === "update" ? "增量更新"
+        : s.mode === "resume" ? "断点续抓" : "全量同步";
+      const etaText = s.mode !== "update" && s.eta_seconds != null
+        ? ` · 剩余 ${fmtEta(s.eta_seconds)}` : "";
+      el["sync-badge-text"].textContent =
+        `${modeText} · ${s.section_label || `板块${s.section}`} 第 ${fmtNum(s.page)} 页 · 库内 ${fmtNum(s.db_total)}${etaText}`;
+    } else {
+      const etaText = m.eta_seconds != null ? ` · 剩余 ${fmtEta(m.eta_seconds)}` : "";
+      el["sync-badge-text"].textContent =
+        `影片详情 · 已拉取 ${fmtNum(m.done)} / ${fmtNum(m.total)} 部${etaText}`;
+    }
   } else {
     el["sync-badge"].hidden = true;
-    if (syncTimer) { clearInterval(syncTimer); syncTimer = null; }
     if (notifyDone && state.prevRunning) {
       showToast(s.message
         ? `同步结束：${s.message}，库内共 ${fmtNum(s.db_total)} 条`
@@ -497,11 +744,14 @@ async function refreshSyncUI(notifyDone) {
   }
 
   // 同步管理页内容（仅在该 tab 下渲染，避免多余 DOM 操作）
-  if (state.tab === "sync") {
-    renderSyncPage(s);
-    if (s.running && !syncTimer) {
-      syncTimer = setInterval(() => refreshSyncUI(true), 3000);
-    }
+  if (state.tab === "sync") renderSyncPage(s, m);
+
+  // 只要有任务在跑就保持轮询，跑完自动停
+  if (busy) {
+    if (!syncTimer) syncTimer = setInterval(() => refreshSyncUI(true), 3000);
+  } else if (syncTimer) {
+    clearInterval(syncTimer);
+    syncTimer = null;
   }
   state.prevRunning = s.running;
 }
@@ -552,6 +802,9 @@ el["search-form"].addEventListener("submit", (e) => {
   e.preventDefault();
   state.q = el.q.value.trim();
   state.page = 1;
+  state.movieId = ""; // 搜索针对整个库，退出单片视图
+  state.movieTitle = "";
+  applyCatFilter();
   load();
 });
 
@@ -561,6 +814,19 @@ el["cat-filter"].addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-cat]");
   if (!btn) return;
   state.localCategory = btn.dataset.cat;
+  state.page = 1;
+  state.movieId = "";
+  state.movieTitle = "";
+  applyCatFilter();
+  load();
+});
+
+el["view-toggle"].addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-view]");
+  if (!btn) return;
+  state.localView = btn.dataset.view;
+  state.movieId = "";
+  state.movieTitle = "";
   state.page = 1;
   applyCatFilter();
   load();

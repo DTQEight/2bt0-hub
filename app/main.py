@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from db import get_sync_progress, init_db, upsert_items
+from db import get_movie, get_sync_progress, init_db, query_groups, upsert_items
+from movies import movie_detail_manager
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
 from sources.bt0 import SECTIONS
@@ -64,11 +66,13 @@ async def items(
     source: str = Query("bt0", max_length=50),
     sc: int = Query(1, ge=1, le=2, description="板块：1=电影 2=电视剧"),
     category: str = Query("", max_length=20, description="本地库分类过滤，空为全部"),
+    movie_id: str = Query("", max_length=30, description="本地库：只看某部影片的版本"),
 ) -> dict:
     name = source
     try:
         result = await get_source(name).fetch_page(
-            page=page, query=q.strip(), section=sc, category=category.strip())
+            page=page, query=q.strip(), section=sc, category=category.strip(),
+            movie_id=movie_id.strip())
     except SourceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # 抓取失败统一转成 502，避免把堆栈暴露给前端
@@ -114,6 +118,62 @@ async def sync_status() -> dict:
 async def sync_stop() -> dict:
     sync_manager.stop()
     return sync_manager.status()
+
+
+# ---- 影片：按片名分组浏览 + 影片详情 ----
+
+PAGE_SIZE = 20
+
+
+@app.get("/api/groups")
+async def groups(
+    page: int = Query(1, ge=1),
+    q: str = Query("", max_length=200),
+    category: str = Query("", max_length=20, description="分类过滤：电影/电视剧，空为全部"),
+) -> dict:
+    """按影片分组浏览本地库：每组＝一部影片及其版本数"""
+    try:
+        rows, total = await asyncio.to_thread(
+            query_groups, page, q.strip(), category.strip(), PAGE_SIZE)
+    except Exception as exc:
+        logger.exception("分组查询失败")
+        raise HTTPException(status_code=502, detail=f"分组查询失败: {exc}") from exc
+    return {
+        "groups": [dict(r) for r in rows],
+        "page": page,
+        "total_pages": max(1, math.ceil(total / PAGE_SIZE)),
+        "total_groups": total,
+    }
+
+
+@app.get("/api/movie/{idcode}")
+async def movie_detail(idcode: str) -> dict:
+    """影片详情（站点 getVideoDetail 的元数据）；未拉取过时 movie 为 null"""
+    return {"movie": await asyncio.to_thread(get_movie, idcode)}
+
+
+# ---- 影片详情批量拉取 ----
+
+@app.post("/api/movies/start")
+async def movies_start() -> dict:
+    try:
+        movie_detail_manager.start()
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return await asyncio.to_thread(movie_detail_manager.status)
+
+
+@app.get("/api/movies/status")
+async def movies_status() -> dict:
+    return await asyncio.to_thread(movie_detail_manager.status)
+
+
+@app.post("/api/movies/stop")
+async def movies_stop() -> dict:
+    movie_detail_manager.stop()
+    return await asyncio.to_thread(movie_detail_manager.status)
 
 
 def _schedule_payload(cfg: dict) -> dict:

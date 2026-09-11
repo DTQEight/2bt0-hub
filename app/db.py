@@ -59,22 +59,32 @@ CREATE TABLE IF NOT EXISTS magnets (
     source TEXT DEFAULT '',
     torrent_name TEXT DEFAULT '',
     trackers TEXT DEFAULT '',
+    movie_id TEXT DEFAULT '',
+    movie_title TEXT DEFAULT '',
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_magnets_id ON magnets(id);
-CREATE INDEX IF NOT EXISTS idx_magnets_category ON magnets(category);
-CREATE INDEX IF NOT EXISTS idx_magnets_last_seen ON magnets(last_seen_at);
--- 索引用途说明：
---   id           → 无分类过滤时分页"定位本页首行"（覆盖索引，只扫约 10MB；否则深页要全表扫约 300MB）
---   category     → get_stats() 的 GROUP BY category，以及本地库按分类筛选后的分页定位
---                  （id 即 rowid，故该单列索引对 SELECT id 是覆盖索引，无需再加 (category,id) 复合索引）
---   last_seen_at → get_stats() 的 MAX(last_seen_at)
--- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索是
--- LIKE '%kw%'（前置通配符无法走 B-tree 索引），也没有按 source 过滤的语句。
--- 二者在 82 万行时占用约 93MB 并拖慢每行写入，故不再创建，并清理存量。
-DROP INDEX IF EXISTS idx_magnets_title;
-DROP INDEX IF EXISTS idx_magnets_source;
+-- 影片表：站点 getVideoDetail 接口的影片维度元数据，按 idcode 唯一。
+-- 一部影片对应多条种子（magnets.movie_id），故影片级字段不重复存在种子上。
+CREATE TABLE IF NOT EXISTS movies (
+    idcode TEXT PRIMARY KEY,
+    title TEXT DEFAULT '',
+    otitle TEXT DEFAULT '',
+    alias TEXT DEFAULT '',
+    years TEXT DEFAULT '',
+    category TEXT DEFAULT '',
+    area TEXT DEFAULT '',
+    language TEXT DEFAULT '',
+    episodes TEXT DEFAULT '',
+    long_time TEXT DEFAULT '',
+    doub_score TEXT DEFAULT '',
+    imdb_id TEXT DEFAULT '',
+    imdb_score TEXT DEFAULT '',
+    director TEXT DEFAULT '',
+    performer TEXT DEFAULT '',
+    abstract TEXT DEFAULT '',
+    fetched_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sync_state (
     key TEXT PRIMARY KEY,
     last_page INTEGER NOT NULL,
@@ -87,11 +97,40 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
+# 索引单独建：idx_magnets_movie 依赖 movie_id 列，必须在旧库补列之后执行
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_magnets_id ON magnets(id);
+CREATE INDEX IF NOT EXISTS idx_magnets_category ON magnets(category);
+CREATE INDEX IF NOT EXISTS idx_magnets_last_seen ON magnets(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_magnets_movie ON magnets(movie_id);
+-- (category, movie_id)：按片名分组浏览时通常带分类过滤，命中它可省掉 GROUP BY 的临时 B 树
+-- （82 万行实测：加索引前 5.6 秒，加后 0.35 秒）
+CREATE INDEX IF NOT EXISTS idx_magnets_cat_movie ON magnets(category, movie_id);
+-- 索引用途说明：
+--   id               → 无分类过滤时分页"定位本页首行"（覆盖索引，只扫约 10MB；否则深页要全表扫约 300MB）
+--   category         → get_stats() 的 GROUP BY category，以及本地库按分类筛选后分页定位本页首行
+--                      （id 即 rowid，故该单列索引对 SELECT id 是覆盖索引）
+--   last_seen_at     → get_stats() 的 MAX(last_seen_at)
+--   movie_id         → "该片的全部版本"分页定位（idx_magnets_movie 对 SELECT id 是覆盖索引）
+--   (category,movie_id) → 按片名分组浏览（GROUP BY movie_id，带分类过滤）
+-- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索是
+-- LIKE '%kw%'（前置通配符无法走 B-tree 索引），也没有按 source 过滤的语句。
+-- 二者在 82 万行时占用约 93MB 并拖慢每行写入，故不再创建，并清理存量。
+DROP INDEX IF EXISTS idx_magnets_title;
+DROP INDEX IF EXISTS idx_magnets_source;
+"""
+
 
 def init_db() -> None:
     with _LOCK:
         with _db() as conn:
             conn.executescript(_SCHEMA)
+            # CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，旧库需显式迁移
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(magnets)")}
+            for name in ("movie_id", "movie_title"):
+                if name not in cols:
+                    conn.execute(f"ALTER TABLE magnets ADD COLUMN {name} TEXT DEFAULT ''")
+            conn.executescript(_INDEXES)
 
 
 _HASH_RE = re.compile(r"btih:([0-9a-fA-F]{40})")
@@ -155,6 +194,8 @@ def upsert_items(source: str, items) -> int:
             source,
             (extra.get("torrent_name") or "").strip(),
             trackers_json,
+            (extra.get("movie_id") or "").strip(),
+            (extra.get("movie_title") or "").strip(),
             now, now,
         ))
     if not rows:
@@ -169,8 +210,8 @@ def upsert_items(source: str, items) -> int:
             conn.executemany(
                 """INSERT INTO magnets (info_hash, magnet, title, size, published_at,
                          category, detail_url, source, torrent_name, trackers,
-                         first_seen_at, last_seen_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                         movie_id, movie_title, first_seen_at, last_seen_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(info_hash) DO UPDATE SET
                        last_seen_at=excluded.last_seen_at,
                        title=CASE WHEN excluded.title!='' THEN excluded.title ELSE magnets.title END,
@@ -181,23 +222,29 @@ def upsert_items(source: str, items) -> int:
                        detail_url=CASE WHEN excluded.detail_url!='' THEN excluded.detail_url ELSE magnets.detail_url END,
                        torrent_name=CASE WHEN excluded.torrent_name!=''
                            THEN excluded.torrent_name ELSE magnets.torrent_name END,
-                       trackers=CASE WHEN excluded.trackers!='' THEN excluded.trackers ELSE magnets.trackers END""",
+                       trackers=CASE WHEN excluded.trackers!='' THEN excluded.trackers ELSE magnets.trackers END,
+                       movie_id=CASE WHEN excluded.movie_id!='' THEN excluded.movie_id ELSE magnets.movie_id END,
+                       movie_title=CASE WHEN excluded.movie_title!=''
+                           THEN excluded.movie_title ELSE magnets.movie_title END""",
                 rows,
             )
     return len({h for h in hashes if h not in existing})
 
 
 def query_items(page: int = 1, keyword: str = "", category: str = "",
-                page_size: int = 20):
+                movie_id: str = "", page_size: int = 20):
     """查询本地库（按入库先后倒序）。
 
-    keyword 模糊匹配标题/种子名/hash/分类；category 为精确分类过滤（如"电影"）。
-    返回 (rows, total)。
+    keyword 模糊匹配标题/种子名/hash/分类；category 为精确分类过滤（如"电影"）；
+    movie_id 过滤某部影片的全部版本。返回 (rows, total)。
     """
     conds, params = [], []
     if category:
         conds.append("category = ?")
         params.append(category)
+    if movie_id:
+        conds.append("movie_id = ?")
+        params.append(movie_id)
     if keyword:
         conds.append(
             "(title LIKE ? OR torrent_name LIKE ? OR info_hash LIKE ? OR category LIKE ?)")
@@ -253,6 +300,98 @@ def get_stats() -> dict:
               "db_size_mb": size_mb, "last_seen": last_seen}
     _stats_cache.update(t=now, data=result)
     return result
+
+
+# ---- 影片（movies）：站点 getVideoDetail 接口的影片维度元数据 ----
+
+# 与 movies 表列一一对应（idcode 是主键，其余为详情字段）
+_MOVIE_FIELDS = ("idcode", "title", "otitle", "alias", "years", "category", "area",
+                 "language", "episodes", "long_time", "doub_score", "imdb_id",
+                 "imdb_score", "director", "performer", "abstract")
+
+
+def upsert_movies(rows: list[dict]) -> int:
+    """保存/更新一批影片详情，按 idcode 覆盖。返回写入条数。"""
+    values = [tuple(str(r.get(f) or "").strip() for f in _MOVIE_FIELDS) + (_now(),)
+              for r in rows if str(r.get("idcode") or "").strip()]
+    if not values:
+        return 0
+    cols = ", ".join(_MOVIE_FIELDS) + ", fetched_at"
+    ph = ",".join("?" * (len(_MOVIE_FIELDS) + 1))
+    updates = ", ".join(f"{f}=excluded.{f}" for f in _MOVIE_FIELDS[1:])
+    with _LOCK:
+        with _db() as conn:
+            conn.executemany(
+                f"""INSERT INTO movies ({cols}) VALUES ({ph})
+                    ON CONFLICT(idcode) DO UPDATE SET {updates},
+                        fetched_at=excluded.fetched_at""",
+                values,
+            )
+    return len(values)
+
+
+def pending_movie_ids() -> list[str]:
+    """种子里出现过、但 movies 表还没有详情的影片 id（供批量拉取详情）。"""
+    with _db() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT m.movie_id FROM magnets m
+               LEFT JOIN movies v ON v.idcode = m.movie_id
+               WHERE m.movie_id != '' AND v.idcode IS NULL""").fetchall()
+    return [r[0] for r in rows]
+
+
+def get_movie(idcode: str):
+    """取一部影片的详情（无则返回 None）"""
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM movies WHERE idcode = ?", (idcode,)).fetchone()
+    return dict(row) if row else None
+
+
+_movie_stats_cache: dict = {"t": 0.0, "data": None}
+
+
+def movie_stats() -> dict:
+    """影片维度统计：已入库影片数、种子里涉及的去重影片数（15s 缓存）"""
+    now = time.monotonic()
+    cached = _movie_stats_cache["data"]
+    if cached is not None and now - _movie_stats_cache["t"] < _STATS_TTL:
+        return cached
+    with _db() as conn:
+        fetched = conn.execute("SELECT COUNT(*) FROM movies").fetchone()[0]
+        wanted = conn.execute(
+            "SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE movie_id > ''"
+        ).fetchone()[0]
+    result = {"fetched": fetched, "wanted": wanted}
+    _movie_stats_cache.update(t=now, data=result)
+    return result
+
+
+def query_groups(page: int = 1, keyword: str = "", category: str = "",
+                 page_size: int = 20):
+    """按影片分组浏览本地库：每组＝一部影片及其版本数。
+
+    组按"该片最新入库的种子"倒序。返回 (rows, total_groups)。
+    """
+    conds, params = ["movie_id > ''"], []
+    if category:
+        conds.append("category = ?")
+        params.append(category)
+    if keyword:
+        conds.append("(movie_title LIKE ? OR title LIKE ? OR movie_id LIKE ?)")
+        kw = f"%{keyword}%"
+        params += [kw, kw, kw]
+    where = " AND ".join(conds)
+    with _db() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE {where}",
+            params).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT movie_id, MAX(movie_title) AS movie_title,
+                       COUNT(*) AS versions, MAX(id) AS last_id
+                FROM magnets WHERE {where}
+                GROUP BY movie_id ORDER BY last_id DESC LIMIT ? OFFSET ?""",
+            [*params, page_size, (page - 1) * page_size]).fetchall()
+    return rows, total
 
 
 # ---- 全量同步进度（断点续抓） ----

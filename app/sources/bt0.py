@@ -15,6 +15,7 @@ API 需带固定 app_id/identity 参数（取自站点前端 JS），无需登�
 from __future__ import annotations
 
 import asyncio
+import html
 import time
 
 import requests
@@ -74,6 +75,20 @@ def api_get(endpoint: str, params: dict) -> dict:
             raise SourceError(f"2bt0 接口请求失败（已重试 {RETRIES} 次）: {exc}") from exc
 
 
+def movie_ref(row: dict) -> dict:
+    """从一行原始数据里提取影片关联信息（片名 + 影片 id）。
+
+    片名字段是干净的片名（zname 才是完整发布名）；
+    aurl1 形如 /mv/1945336，末段数字即影片 id（对应 getVideoDetail 的 idcode）。
+    """
+    aurl1 = (row.get("aurl1") or "").strip().rstrip("/")
+    movie_id = aurl1.split("/")[-1] if aurl1 else ""
+    return {
+        "movie_id": movie_id if movie_id.isdigit() else "",
+        "movie_title": html.unescape((row.get("title") or "").strip()),
+    }
+
+
 def fetch_list(section: int, page: int) -> list[Item]:
     """抓取某板块一页种子列表（页可能为空，表示越界或站点数据空洞）。
 
@@ -91,7 +106,35 @@ def fetch_list(section: int, page: int) -> list[Item]:
         published_at=r.get("eztime") or "",
         category=SECTIONS[section],
         detail_url=BASE + r["aurl"] if r.get("aurl") else "",
+        extra=movie_ref(r),
     ) for r in rows]
+
+
+# getVideoDetail 返回字段 → movies 表列名
+_DETAIL_MAP = {
+    "title": "title", "otitle": "otitle", "alias": "alias", "years": "years",
+    "class": "category", "production_area": "area", "language": "language",
+    "episodes": "episodes", "long_time": "long_time", "doub_score": "doub_score",
+    "IMDB_number": "imdb_id", "IMDB_score": "imdb_score", "director": "director",
+    "performer": "performer", "abstract": "abstract",
+}
+
+
+def fetch_video_detail(idcode: str) -> dict:
+    """抓取一部影片的元数据（站点 getVideoDetail）。
+
+    idcode 即种子列表里 aurl1 的末段数字（形如 /mv/1945336 → 1945336）。
+    返回字典的键与 db.movies 表列名一致。
+    """
+    d = api_get("getVideoDetail", {"id": idcode})
+    out = {"idcode": str(d.get("idcode") or idcode).strip()}
+    for src, dst in _DETAIL_MAP.items():
+        # 站点部分字段带 HTML 实体（如 &#39; 表示撇号），入库前解码
+        out[dst] = html.unescape(str(d.get(src) or "").strip())
+    # "@" 是站点表示"无评分"的占位符
+    if out["doub_score"] == "@":
+        out["doub_score"] = ""
+    return out
 
 
 def _search(keyword: str, page: int) -> PageResult:

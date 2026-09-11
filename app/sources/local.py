@@ -13,10 +13,10 @@ from .base import Item, PageResult, Source, SourceError
 PAGE_SIZE = 20
 
 
-def _query(page: int, keyword: str, category: str) -> PageResult:
+def _query(page: int, keyword: str, category: str, movie_id: str) -> PageResult:
     try:
-        rows, total = query_items(page=page, keyword=keyword,
-                                  category=category, page_size=PAGE_SIZE)
+        rows, total = query_items(page=page, keyword=keyword, category=category,
+                                  movie_id=movie_id, page_size=PAGE_SIZE)
     except Exception as exc:
         raise SourceError(f"本地库查询失败: {exc}") from exc
     items = [Item(
@@ -27,7 +27,8 @@ def _query(page: int, keyword: str, category: str) -> PageResult:
         published_at=r["published_at"],
         category=r["category"] or r["source"],
         detail_url=r["detail_url"],
-        extra={"info_hash": r["info_hash"], "origin": r["source"]},
+        extra={"info_hash": r["info_hash"], "origin": r["source"],
+               "movie_id": r["movie_id"], "movie_title": r["movie_title"]},
     ) for r in rows]
     return PageResult(
         items=items,
@@ -44,5 +45,7 @@ class LocalSource(Source):
     label = "本地磁力库"
 
     async def fetch_page(self, page: int = 1, query: str = "",
-                         category: str = "", **kwargs) -> PageResult:
-        return await asyncio.to_thread(_query, page, query.strip(), category)
+                         category: str = "", movie_id: str = "",
+                         **kwargs) -> PageResult:
+        return await asyncio.to_thread(
+            _query, page, query.strip(), category, movie_id.strip())
