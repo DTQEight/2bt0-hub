@@ -63,10 +63,12 @@ async def items(
     q: str = Query("", max_length=200),
     source: str = Query("bt0", max_length=50),
     sc: int = Query(1, ge=1, le=2, description="板块：1=电影 2=电视剧"),
+    category: str = Query("", max_length=20, description="本地库分类过滤，空为全部"),
 ) -> dict:
     name = source
     try:
-        result = await get_source(name).fetch_page(page=page, query=q.strip(), section=sc)
+        result = await get_source(name).fetch_page(
+            page=page, query=q.strip(), section=sc, category=category.strip())
     except SourceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # 抓取失败统一转成 502，避免把堆栈暴露给前端

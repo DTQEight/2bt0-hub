@@ -138,6 +138,28 @@ main { max-width: 980px; margin: 0 auto; padding: 20px 24px 60px; }
 
 .searchbar input:focus { border-color: var(--accent); }
 
+/* 本地库分类筛选（胶囊按钮组） */
+
+.cat-filter {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.cat-filter button {
+  padding: 6px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.cat-filter button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
 button, .act {
   padding: 8px 16px;
   border: 1px solid var(--border);

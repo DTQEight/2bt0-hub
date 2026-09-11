@@ -4,13 +4,14 @@ const state = {
   tab: "movie", // movie | tv | local | sync | logs
   page: 1,
   q: "",
+  localCategory: "电影", // 本地库默认只看电影，可切电视剧 / 全部
   prevRunning: false,
 };
 
 const TABS = {
   movie: { source: "bt0", sc: 1, hint: "留空浏览最新电影种子（自带磁力）；输入片名搜索影片库…" },
   tv: { source: "bt0", sc: 2, hint: "留空浏览最新电视剧种子（自带磁力）；输入片名搜索影片库…" },
-  local: { source: "local", sc: 0, hint: "搜索本地库已保存的磁力（标题 / hash / 分类），留空浏览全部…" },
+  local: { source: "local", sc: 0, hint: "搜索本地库已保存的磁力（标题 / hash / 分类），留空则按上方分类浏览…" },
   sync: {},
   logs: {},
 };
@@ -19,8 +20,9 @@ const SECTIONS = { 1: "电影", 2: "电视剧" };
 
 const el = {};
 for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
-  "list-view", "sync-view", "sync-grid", "schedule-card", "logs-view", "log-box",
-  "log-scroll", "log-refresh", "sync-badge", "sync-badge-text", "sync-stop", "toast"]) {
+  "list-view", "cat-filter", "sync-view", "sync-grid", "schedule-card", "logs-view",
+  "log-box", "log-scroll", "log-refresh", "sync-badge", "sync-badge-text",
+  "sync-stop", "toast"]) {
   el[id] = document.getElementById(id);
 }
 
@@ -73,6 +75,7 @@ function switchTab(tab) {
   el["list-view"].hidden = !isList;
   el["sync-view"].hidden = tab !== "sync";
   el["logs-view"].hidden = tab !== "logs";
+  applyCatFilter();
   if (tab === "logs") {
     stopSyncPolling();
     startLogPolling();
@@ -95,6 +98,16 @@ function applySearchbar() {
   el.q.placeholder = t.hint || "搜索…";
 }
 
+// 分类筛选器只在「本地磁力库」页出现（在线页有各自独立的板块 tab）
+function applyCatFilter() {
+  const isLocal = state.tab === "local";
+  el["cat-filter"].hidden = !isLocal;
+  if (!isLocal) return;
+  for (const btn of el["cat-filter"].querySelectorAll("button")) {
+    btn.classList.toggle("active", btn.dataset.cat === state.localCategory);
+  }
+}
+
 // ---- 列表加载 ----
 
 async function load() {
@@ -103,6 +116,7 @@ async function load() {
   const params = new URLSearchParams({ source: t.source, page: state.page });
   if (t.sc) params.set("sc", t.sc);
   if (state.q) params.set("q", state.q);
+  if (state.tab === "local" && state.localCategory) params.set("category", state.localCategory);
 
   el.status.className = "status";
   el.status.textContent = "加载中…";
@@ -131,7 +145,9 @@ function renderList(data) {
   if (!items.length) {
     const li = document.createElement("li");
     li.className = "empty";
-    li.textContent = state.tab === "local"
+    // 仅在"无筛选且无关键词"时才提示库为空，否则只是当前条件没命中
+    const filtered = state.tab === "local" && (state.q || state.localCategory);
+    li.textContent = state.tab === "local" && !filtered
       ? "本地库为空。在电影 / 电视剧页浏览会自动入库，也可在「同步」页启动全量同步"
       : "没有匹配的结果";
     el.list.appendChild(li);
@@ -531,6 +547,15 @@ el["search-form"].addEventListener("submit", (e) => {
 });
 
 el["sync-stop"].addEventListener("click", stopSync);
+
+el["cat-filter"].addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-cat]");
+  if (!btn) return;
+  state.localCategory = btn.dataset.cat;
+  state.page = 1;
+  applyCatFilter();
+  load();
+});
 
 el["log-refresh"].addEventListener("click", loadLogs);
 

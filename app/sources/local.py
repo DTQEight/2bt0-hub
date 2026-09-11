@@ -13,9 +13,10 @@ from .base import Item, PageResult, Source, SourceError
 PAGE_SIZE = 20
 
 
-def _query(page: int, keyword: str) -> PageResult:
+def _query(page: int, keyword: str, category: str) -> PageResult:
     try:
-        rows, total = query_items(page=page, keyword=keyword, page_size=PAGE_SIZE)
+        rows, total = query_items(page=page, keyword=keyword,
+                                  category=category, page_size=PAGE_SIZE)
     except Exception as exc:
         raise SourceError(f"本地库查询失败: {exc}") from exc
     items = [Item(
@@ -42,5 +43,6 @@ class LocalSource(Source):
     name = "local"
     label = "本地磁力库"
 
-    async def fetch_page(self, page: int = 1, query: str = "", **kwargs) -> PageResult:
-        return await asyncio.to_thread(_query, page, query.strip())
+    async def fetch_page(self, page: int = 1, query: str = "",
+                         category: str = "", **kwargs) -> PageResult:
+        return await asyncio.to_thread(_query, page, query.strip(), category)

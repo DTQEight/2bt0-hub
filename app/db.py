@@ -66,8 +66,9 @@ CREATE INDEX IF NOT EXISTS idx_magnets_id ON magnets(id);
 CREATE INDEX IF NOT EXISTS idx_magnets_category ON magnets(category);
 CREATE INDEX IF NOT EXISTS idx_magnets_last_seen ON magnets(last_seen_at);
 -- 索引用途说明：
---   id           → 分页"定位本页首行"（覆盖索引，只扫约 10MB；否则深页要全表扫约 300MB）
---   category     → get_stats() 的 GROUP BY category
+--   id           → 无分类过滤时分页"定位本页首行"（覆盖索引，只扫约 10MB；否则深页要全表扫约 300MB）
+--   category     → get_stats() 的 GROUP BY category，以及本地库按分类筛选后的分页定位
+--                  （id 即 rowid，故该单列索引对 SELECT id 是覆盖索引，无需再加 (category,id) 复合索引）
 --   last_seen_at → get_stats() 的 MAX(last_seen_at)
 -- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索是
 -- LIKE '%kw%'（前置通配符无法走 B-tree 索引），也没有按 source 过滤的语句。
@@ -186,16 +187,23 @@ def upsert_items(source: str, items) -> int:
     return len({h for h in hashes if h not in existing})
 
 
-def query_items(page: int = 1, keyword: str = "", page_size: int = 20):
-    """查询本地库（按入库先后倒序）。keyword 匹配标题/种子名/hash/分类。
+def query_items(page: int = 1, keyword: str = "", category: str = "",
+                page_size: int = 20):
+    """查询本地库（按入库先后倒序）。
 
+    keyword 模糊匹配标题/种子名/hash/分类；category 为精确分类过滤（如"电影"）。
     返回 (rows, total)。
     """
-    where, params = "1=1", []
+    conds, params = [], []
+    if category:
+        conds.append("category = ?")
+        params.append(category)
     if keyword:
-        where = "(title LIKE ? OR torrent_name LIKE ? OR info_hash LIKE ? OR category LIKE ?)"
+        conds.append(
+            "(title LIKE ? OR torrent_name LIKE ? OR info_hash LIKE ? OR category LIKE ?)")
         kw = f"%{keyword}%"
-        params = [kw, kw, kw, kw]
+        params += [kw, kw, kw, kw]
+    where = " AND ".join(conds) or "1=1"
     offset = (page - 1) * page_size
     with _db() as conn:
         total = conn.execute(
@@ -207,14 +215,16 @@ def query_items(page: int = 1, keyword: str = "", page_size: int = 20):
                 [*params, page_size, offset],
             ).fetchall()
         else:
-            # 两步分页：先用 id 覆盖索引定位本页首行（只扫索引），再按 id 范围取整行。
+            # 两步分页：先用索引定位本页首行（无分类过滤走 id 覆盖索引，
+            # 有分类过滤走 category 索引），再按 id 范围取整行。
             # 直接 LIMIT/OFFSET 会让 SQLite 全表扫描并逐行丢弃，深页要读约 300MB。
             anchor = conn.execute(
-                "SELECT id FROM magnets ORDER BY id DESC LIMIT 1 OFFSET ?", (offset,)
+                f"SELECT id FROM magnets WHERE {where} ORDER BY id DESC LIMIT 1 OFFSET ?",
+                [*params, offset],
             ).fetchone()
             rows = [] if anchor is None else conn.execute(
-                "SELECT * FROM magnets WHERE id <= ? ORDER BY id DESC LIMIT ?",
-                (anchor[0], page_size),
+                f"SELECT * FROM magnets WHERE {where} AND id <= ? ORDER BY id DESC LIMIT ?",
+                [*params, anchor[0], page_size],
             ).fetchall()
     return rows, total
 
