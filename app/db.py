@@ -325,6 +325,22 @@ def get_setting(key: str, default: str = "") -> str:
     return row["value"] if row else default
 
 
+def backup_to(target: Path) -> None:
+    """把整个库复制到 target（VACUUM INTO）。
+
+    生成的是紧凑副本（等价于压缩 + 去碎片），且是一次只读快照，
+    可在服务运行时执行，不影响并发读写。
+    """
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # VACUUM 不能在事务内执行，因此用自动提交（isolation_level=None）连接
+    conn = sqlite3.connect(str(_db_path()), timeout=60, isolation_level=None)
+    try:
+        conn.execute("VACUUM INTO ?", (str(target),))
+    finally:
+        conn.close()
+
+
 def set_setting(key: str, value: str) -> None:
     with _LOCK:
         with _db() as conn:

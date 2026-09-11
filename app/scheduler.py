@@ -14,17 +14,21 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from db import get_setting, set_setting
+from db import backup_to, get_setting, set_setting
 from sources.bt0 import SECTIONS
 from sync import sync_manager
 
 logger = logging.getLogger("resource-hub.scheduler")
 
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
 # 默认触发小时（0-23 点，容器本地时间）；网页上改过之后以数据库为准
 DEFAULT_HOUR = int(os.getenv("SYNC_HOUR", "3"))
 # 调度线程轮询间隔：兼作"重读配置"和"等待到点"的粒度
 POLL_SECONDS = 30
+# 每日增量跑完后自动备份，只保留最近 N 份
+BACKUP_KEEP = 7
 
 _KEY_ENABLED = "schedule.enabled"
 _KEY_HOUR = "schedule.hour"
@@ -67,8 +71,27 @@ def next_run_at(cfg: dict | None = None) -> datetime | None:
 
 # ---- 执行 ----
 
+def backup_database() -> None:
+    """备份数据库：VACUUM INTO 生成带日期的紧凑快照，只保留最近 BACKUP_KEEP 份"""
+    backup_dir = DATA_DIR / "backups"
+    target = backup_dir / f"magnets-{datetime.now():%Y%m%d}.db"
+    try:
+        backup_to(target)
+    except Exception:
+        logger.exception("数据库备份失败（不影响同步）")
+        return
+    logger.info("数据库已备份：%s（%.1f MB）", target.name,
+                target.stat().st_size / 1048576)
+    for old in sorted(backup_dir.glob("magnets-*.db"))[:-BACKUP_KEEP]:
+        try:
+            old.unlink()
+            logger.info("已清理旧备份：%s", old.name)
+        except OSError:
+            logger.warning("旧备份清理失败：%s", old.name)
+
+
 def run_daily_incremental() -> None:
-    """依次对电影、电视剧执行增量更新（一个跑完再跑下一个）"""
+    """依次对电影、电视剧执行增量更新（一个跑完再跑下一个），最后备份数据库"""
     logger.info("每日增量更新开始")
     for section in sorted(SECTIONS):
         label = SECTIONS[section]
@@ -84,6 +107,7 @@ def run_daily_incremental() -> None:
             time.sleep(2)
         logger.info("每日增量：%s 结束（%s）", label, sync_manager.state["message"])
     logger.info("每日增量更新结束")
+    backup_database()
 
 
 def _loop() -> None:
