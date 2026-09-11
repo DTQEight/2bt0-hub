@@ -94,6 +94,7 @@ class MovieDetailManager:
 
     def _run(self, pending: list[str]) -> None:
         err_streak = 0
+        failed_ids: list[str] = []  # 失败的影片 id，跑完统一补抓一轮
         batch: list[dict] = []
         aborted = ""
         try:
@@ -103,12 +104,13 @@ class MovieDetailManager:
                         break
                     futures = [ex.submit(self._fetch_one, m)
                                for m in pending[i:i + WORKERS]]
-                    for fut in futures:
+                    for mid, fut in zip(pending[i:i + WORKERS], futures):
                         self.state["done"] += 1
                         res = fut.result()
                         if res is None:
                             err_streak += 1
                             self.state["failed"] += 1
+                            failed_ids.append(mid)
                         else:
                             err_streak = 0
                             batch.append(res)
@@ -125,6 +127,22 @@ class MovieDetailManager:
                         logger.warning("影片详情拉取连续失败 %d 次，中止（已完成 %d 部）",
                                        err_streak, self.state["done"])
                         break
+            # 正常跑完后补抓一轮失败影片（站点偶发鉴权/限流抖动，隔几秒重试通常能过）
+            if not aborted and not self._stop.is_set() and failed_ids:
+                time.sleep(3)
+                logger.info("补抓失败影片 %d 部", len(failed_ids))
+                recovered = 0
+                for mid in failed_ids:
+                    if self._stop.is_set():
+                        break
+                    res = self._fetch_one(mid)
+                    if res is not None:
+                        recovered += 1
+                        self.state["failed"] -= 1
+                        batch.append(res)
+                if recovered:
+                    logger.info("补抓成功 %d/%d 部，仍失败 %d 部",
+                                recovered, len(failed_ids), self.state["failed"])
         except Exception as exc:  # 兜底：任何异常都不能让线程僵死在 running 状态
             aborted = f"异常终止: {exc}"
             logger.exception("影片详情拉取异常终止")
