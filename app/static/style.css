@@ -334,9 +334,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 13px;
   color: var(--muted);
   line-height: 1.75;
-  max-height: 132px;
-  overflow: hidden;
+  /* 简介超长时限高滚动，避免把影片卡撑得过高 */
+  max-height: 176px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
+
+.mh-abstract::-webkit-scrollbar { width: 6px; }
+.mh-abstract::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.mh-abstract::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 .mh-top .act { flex-shrink: 0; }
 
