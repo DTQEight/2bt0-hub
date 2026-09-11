@@ -1,0 +1,35 @@
+name: resource-hub
+
+services:
+  web:
+    build:
+      context: ./app
+    image: resource-hub:local
+    container_name: resource-hub
+    restart: unless-stopped
+    ports:
+      # LAN 访问方案：Docker 只绑本机回环 8001，
+      # 外部 8000 由 Windows portproxy 转发（netsh interface portproxy，需管理员配置一次）
+      # 绕过 Docker Desktop 对非本机连接的转发缺陷
+      - "127.0.0.1:8001:8000"
+    environment:
+      DATA_DIR: /data
+      SOURCE: "${SOURCE:-bt0}"
+      TZ: "Asia/Shanghai"
+      # 让 Python 的字节码缓存也落到 E 盘，不写容器可写层
+      PYTHONPYCACHEPREFIX: /data/tmp/pycache
+      # 每日增量更新的触发小时（容器本地时间，TZ=Asia/Shanghai 即北京时间）
+      SYNC_HOUR: "3"
+    volumes:
+      # 全部运行数据（日志/样本/临时文件/数据库）都留在本机 E 盘项目目录
+      - ./data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

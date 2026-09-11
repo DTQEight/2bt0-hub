@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>2bt0 资源库</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" aria-hidden="true"></span>
+      <h1>2bt0 资源库</h1>
+    </div>
+    <nav class="tabs" id="tabs" aria-label="模块切换">
+      <button type="button" data-tab="movie">电影</button>
+      <button type="button" data-tab="tv">电视剧</button>
+      <button type="button" data-tab="local">本地磁力库</button>
+      <button type="button" data-tab="sync">同步</button>
+      <button type="button" data-tab="logs">日志</button>
+    </nav>
+    <div class="sync-badge" id="sync-badge" hidden>
+      <span class="pulse" aria-hidden="true"></span>
+      <span id="sync-badge-text"></span>
+      <button type="button" id="sync-stop">停止</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="list-view">
+      <form id="search-form" class="searchbar" role="search">
+        <input id="q" type="search" autocomplete="off" />
+        <button type="submit">搜索</button>
+      </form>
+      <div id="status" class="status">加载中…</div>
+      <ul id="list" class="list"></ul>
+      <nav id="pager" class="pager" aria-label="分页"></nav>
+    </section>
+
+    <section id="sync-view" hidden>
+      <div id="schedule-card"></div>
+      <div class="sync-grid" id="sync-grid"></div>
+    </section>
+
+    <section id="logs-view" hidden>
+      <div class="logs-head">
+        <span class="logs-title">运行日志（含同步进度，5 秒自动刷新）</span>
+        <label class="logs-opt">
+          <input type="checkbox" id="log-scroll" checked />
+          自动滚动
+        </label>
+        <button type="button" id="log-refresh" class="logs-refresh">立即刷新</button>
+      </div>
+      <pre id="log-box" class="log-box" aria-live="off"></pre>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
