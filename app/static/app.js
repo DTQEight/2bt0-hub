@@ -130,8 +130,10 @@ async function load() {
   const token = ++loadToken;
   const t = TABS[state.tab];
   if (!t.source) return;
-  // 本地库「按片名」视图走独立接口（分组结果不是磁力条目）
-  if (state.tab === "local" && state.localView === "groups" && !state.movieId) {
+  // 本地库「按片名」视图是海报墙，走独立接口（分组结果不是磁力条目）
+  const posterWall = state.tab === "local" && state.localView === "groups" && !state.movieId;
+  el.list.classList.toggle("poster-grid", posterWall);
+  if (posterWall) {
     return loadGroups(token);
   }
   const params = new URLSearchParams({ source: t.source, page: state.page });
@@ -261,18 +263,25 @@ function renderGroups(data) {
 
 function buildGroupCard(g) {
   const li = document.createElement("li");
-  li.className = "card group-card";
+  li.className = "poster-card";
+  const title = g.title || g.movie_title || `影片 ${g.movie_id}`;
+  // 站点用 0 / @ 表示"暂无评分"，不显示角标
+  const score = g.doub_score && !["0", "@"].includes(g.doub_score) ? g.doub_score : "";
+  // 海报图床是外链，加载失败只是留空，不影响其它信息
+  const poster = g.image && /^https?:\/\//i.test(g.image)
+    ? `<img class="pc-img" src="${escapeHtml(g.image)}" alt="${escapeHtml(title)}"
+             loading="lazy" referrerpolicy="no-referrer">`
+    : `<div class="pc-noimg">${escapeHtml(title)}</div>`;
+  const meta = [g.years, `${fmtNum(g.versions)} 个版本`].filter(Boolean).join(" · ");
+
   li.innerHTML = `
-    <div class="card-main">
-      <div class="card-title" title="${escapeHtml(g.movie_title)}">${escapeHtml(g.movie_title || `影片 ${g.movie_id}`)}</div>
-      <div class="card-meta"><span class="ver-badge">${fmtNum(g.versions)} 个版本</span></div>
+    <div class="pc-poster">
+      ${poster}
+      ${score ? `<span class="pc-score">${escapeHtml(score)}</span>` : ""}
     </div>
-    <div class="card-actions"><button type="button" class="act">查看版本 ›</button></div>`;
-  const open = () => openMovie(g.movie_id, g.movie_title);
-  li.querySelector("button").addEventListener("click", open);
-  li.addEventListener("click", (e) => {
-    if (!e.target.closest("button")) open(); // 整卡可点
-  });
+    <div class="pc-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+    <div class="pc-meta">${escapeHtml(meta)}</div>`;
+  li.addEventListener("click", () => openMovie(g.movie_id, title));
   return li;
 }
 

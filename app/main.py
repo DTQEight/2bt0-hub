@@ -138,7 +138,8 @@ async def sync_stop() -> dict:
 
 # ---- 影片：按片名分组浏览 + 影片详情 ----
 
-PAGE_SIZE = 20
+# 海报墙每页 24 部：宽屏 8 列正好铺满 3 行
+GROUPS_PAGE_SIZE = 24
 
 
 @app.get("/api/groups")
@@ -150,14 +151,14 @@ async def groups(
     """按影片分组浏览本地库：每组＝一部影片及其版本数"""
     try:
         rows, total = await asyncio.to_thread(
-            query_groups, page, q.strip(), category.strip(), PAGE_SIZE)
+            query_groups, page, q.strip(), category.strip(), GROUPS_PAGE_SIZE)
     except Exception as exc:
         logger.exception("分组查询失败")
         raise HTTPException(status_code=502, detail=f"分组查询失败: {exc}") from exc
     return {
         "groups": [dict(r) for r in rows],
         "page": page,
-        "total_pages": max(1, math.ceil(total / PAGE_SIZE)),
+        "total_pages": max(1, math.ceil(total / GROUPS_PAGE_SIZE)),
         "total_groups": total,
     }
 

@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from db import (clear_sync_progress, get_sync_done, get_sync_progress,
                 get_stats, set_sync_done, set_sync_progress, upsert_items)
+from movies import movie_detail_manager
 from sources.bt0 import BASE, SECTIONS, api_get, movie_ref
 
 logger = logging.getLogger("resource-hub.sync")
@@ -86,6 +87,7 @@ class SyncManager:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._samples: deque = deque(maxlen=150)  # (monotonic, page) 速度采样
+        self._auto_details = True  # 增量结束后是否自动跟进拉影片详情
         self.state = {
             "running": False,
             "source": "bt0",
@@ -102,13 +104,17 @@ class SyncManager:
     # ---- 对外接口 ----
 
     def start(self, section: int, start_page: int | None = None,
-              workers: int = 4, mode: str | None = None) -> None:
+              workers: int = 4, mode: str | None = None,
+              auto_details: bool = True) -> None:
         """启动同步。
 
         start_page 不传时自动选择：有断点 → 断点续抓；已全量完成 → 增量更新；
         否则 → 全量抓取。mode 可显式指定：
         - "full"   全量（有断点则自动继续）
         - "update" 增量更新（要求该板块已完成全量同步）
+
+        auto_details：增量结束后是否自动拉取新增影片详情。定时任务自己会在
+        两个板块都跑完后统一拉取，所以传 False 避免重复触发。
         """
         if self.state["running"]:
             raise RuntimeError("同步已在进行中，请先停止")
@@ -130,6 +136,7 @@ class SyncManager:
         mode = mode if mode in MODE_LABELS else auto_mode
         self._stop.clear()
         self._samples.clear()
+        self._auto_details = auto_details
         self.state.update(
             running=True, section=section, mode=mode,
             page=page, fetched=0, message="",
@@ -292,6 +299,24 @@ class SyncManager:
                     ("…" if len(still_failed) > 8 else "")
                 self.state["message"] = ((self.state["message"] or "同步结束")
                                          + f"；{len(still_failed)} 页补抓后仍失败（{preview}）")
+            # 增量更新结束后自动跟进拉取新影片详情（海报/年份/评分，供海报墙显示）
+            if mode == "update" and self._auto_details and not self._stop.is_set():
+                self._fetch_new_movie_details()
+
+    @staticmethod
+    def _fetch_new_movie_details() -> None:
+        """增量结束后自动拉取新增影片的详情。
+
+        只处理待拉取队列（种子里出现过、movies 表还没有的影片），
+        老片不会重复请求；失败只记日志，不影响同步结果。
+        """
+        if movie_detail_manager.state["running"]:
+            logger.info("影片详情：已有任务在进行，跳过自动拉取")
+            return
+        try:
+            movie_detail_manager.start()
+        except (ValueError, RuntimeError) as exc:
+            logger.info("影片详情：无需拉取（%s）", exc)
 
     def _save(self, sc: int, page: int, rows: list[dict], mode: str) -> int:
         """入库一页，返回本页新增条数（-1 表示入库失败，不计入增量判断）"""

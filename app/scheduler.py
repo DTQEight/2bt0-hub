@@ -2,6 +2,7 @@
 
 - 只做增量更新（扫前 10 页追新），不做全量；板块必须已完成全量同步
 - 两个板块共用一个同步器，必须串行：电影跑完再跑电视剧
+- 增量结束后自动拉取当天新增影片的详情（海报/评分等），最后备份数据库
 - 已有同步在跑（例如手动全量）时跳过当天，避免互相打断
 - 开关与触发小时存在数据库里，网页「同步」页可随时修改，调度线程每 30 秒读取一次
 - 容器时区由 TZ 决定（compose 里为 Asia/Shanghai），按容器本地时间触发
@@ -17,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from db import backup_to, get_setting, set_setting
+from movies import movie_detail_manager
 from sources.bt0 import SECTIONS
 from sync import sync_manager
 
@@ -90,8 +92,33 @@ def backup_database() -> None:
             logger.warning("旧备份清理失败：%s", old.name)
 
 
+def fetch_new_movie_details() -> None:
+    """拉取新增影片的详情（海报/年份/评分），供本地库海报墙显示。
+
+    只处理待拉取队列（种子里出现过、movies 表还没有的影片），
+    所以已有详情的老片不会重复请求；队列为空时直接跳过。
+    """
+    if sync_manager.state["running"]:
+        logger.warning("影片详情：同步仍在进行，跳过本次")
+        return
+    if movie_detail_manager.state["running"]:
+        logger.info("影片详情：已有任务在进行，跳过本次")
+        return
+    try:
+        movie_detail_manager.start()
+    except (ValueError, RuntimeError) as exc:
+        logger.info("影片详情：无需拉取（%s）", exc)
+        return
+    logger.info("影片详情：开始拉取新增影片（共 %d 部）",
+                movie_detail_manager.state["total"])
+    while movie_detail_manager.state["running"]:
+        time.sleep(2)
+    logger.info("影片详情：结束（%s）", movie_detail_manager.state["message"])
+
+
 def run_daily_incremental() -> None:
-    """依次对电影、电视剧执行增量更新（一个跑完再跑下一个），最后备份数据库"""
+    """依次对电影、电视剧执行增量更新（一个跑完再跑下一个），
+    随后拉取新增影片详情，最后备份数据库"""
     logger.info("每日增量更新开始")
     for section in sorted(SECTIONS):
         label = SECTIONS[section]
@@ -99,7 +126,9 @@ def run_daily_incremental() -> None:
             logger.warning("每日增量：已有同步在进行，跳过%s", label)
             continue
         try:
-            sync_manager.start(section, mode="update")
+            # auto_details=False：两个板块都跑完后由本函数统一拉详情，避免每跑完
+            # 一个板块就触发一次（也与下一板块的同步叠加请求）
+            sync_manager.start(section, mode="update", auto_details=False)
         except (ValueError, RuntimeError) as exc:
             logger.warning("每日增量：%s 跳过（%s）", label, exc)
             continue
@@ -107,6 +136,7 @@ def run_daily_incremental() -> None:
             time.sleep(2)
         logger.info("每日增量：%s 结束（%s）", label, sync_manager.state["message"])
     logger.info("每日增量更新结束")
+    fetch_new_movie_details()
     backup_database()
 
 

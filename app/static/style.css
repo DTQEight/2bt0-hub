@@ -295,20 +295,70 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--accent);
 }
 
-/* 「按片名」分组卡片（整卡可点进该片的版本列表） */
-.group-card { cursor: pointer; }
-
-.group-card .card-title { font-size: 16px; }
-
-.ver-badge {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  font-size: 12px;
-  color: var(--accent);
+/* 「按片名」视图：海报卡片墙（整卡可点进该片的版本列表） */
+#list.poster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 18px 14px;
 }
+
+#list.poster-grid .empty { grid-column: 1 / -1; }
+
+.poster-card { min-width: 0; cursor: pointer; }
+
+.pc-poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2);
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.poster-card:hover .pc-poster {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.pc-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* 未拉取影片详情（或站点本身无海报）时的占位：直接显示片名 */
+.pc-noimg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 12px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.pc-score {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.68);
+  color: #ffd166;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pc-title {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-meta { margin-top: 3px; font-size: 12px; color: var(--muted); }
 
 /* 影片信息卡（看某片版本时置顶显示） */
 .movie-head {

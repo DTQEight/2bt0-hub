@@ -378,7 +378,9 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
                  page_size: int = 20):
     """按影片分组浏览本地库：每组＝一部影片及其版本数。
 
-    组按"该片最新入库的种子"倒序。返回 (rows, total_groups)。
+    组按"该片最新入库的种子"倒序。海报/年份/评分取自 movies 表
+    （未拉取详情的影片这几个字段为空，前端显示占位）。
+    返回 (rows, total_groups)。
     """
     conds, params = ["movie_id > ''"], []
     if category:
@@ -393,11 +395,16 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
         total = conn.execute(
             f"SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE {where}",
             params).fetchone()[0]
+        # 先分组取出本页 20 组，再按主键左连 movies，避免先连再分组
         rows = conn.execute(
-            f"""SELECT movie_id, MAX(movie_title) AS movie_title,
-                       COUNT(*) AS versions, MAX(id) AS last_id
-                FROM magnets WHERE {where}
-                GROUP BY movie_id ORDER BY last_id DESC LIMIT ? OFFSET ?""",
+            f"""SELECT g.movie_id,
+                       COALESCE(NULLIF(m.title, ''), g.movie_title) AS title,
+                       g.versions, m.image, m.years, m.doub_score
+                FROM (SELECT movie_id, MAX(movie_title) AS movie_title,
+                             COUNT(*) AS versions, MAX(id) AS last_id
+                      FROM magnets WHERE {where}
+                      GROUP BY movie_id ORDER BY last_id DESC LIMIT ? OFFSET ?) g
+                LEFT JOIN movies m ON m.idcode = g.movie_id""",
             [*params, page_size, (page - 1) * page_size]).fetchall()
     return rows, total
 
