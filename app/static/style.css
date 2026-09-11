@@ -203,14 +203,43 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
   flex-wrap: wrap;
 }
 
-.view-toggle {
+/* 筛选行右侧：排序 + 视图切换 */
+.filters-right {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sort-select {
   display: flex;
   align-items: center;
   gap: 8px;
   padding-bottom: 12px;
 }
 
-.view-toggle .vt-label { color: var(--muted); font-size: 13px; }
+.sort-select select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+}
+
+.sort-select select:hover,
+.sort-select select:focus { border-color: var(--accent); }
+
+.vt-label { color: var(--muted); font-size: 13px; }
+
+.view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+}
 
 .view-toggle button {
   padding: 6px 14px;

@@ -253,10 +253,14 @@ def query_items(page: int = 1, keyword: str = "", category: str = "",
         conds.append("movie_id = ?")
         params.append(movie_id)
     if keyword:
-        conds.append(
-            "(title LIKE ? OR torrent_name LIKE ? OR info_hash LIKE ? OR category LIKE ?)")
         kw = f"%{keyword}%"
-        params += [kw, kw, kw, kw]
+        # 除种子自身字段外，还匹配影片的原名/别名/导演/主演（存在 movies 表）
+        conds.append(
+            "(title LIKE ? OR torrent_name LIKE ? OR info_hash LIKE ? OR category LIKE ?"
+            " OR movie_id IN (SELECT idcode FROM movies"
+            "                 WHERE otitle LIKE ? OR alias LIKE ?"
+            "                    OR performer LIKE ? OR director LIKE ?))")
+        params += [kw] * 8
     where = " AND ".join(conds) or "1=1"
     offset = (page - 1) * page_size
     with _db() as conn:
@@ -374,12 +378,24 @@ def movie_stats() -> dict:
     return result
 
 
+# 海报墙排序：值 → ORDER BY 表达式。last/versions 取自分组结果，可以先分页再
+# 连 movies（只连本页 24 行）；score/years 在 movies 表里，必须先连接全部组再排序。
+_GROUP_SORT_EXPR = {
+    "last": "last_id",
+    "versions": "versions",
+    "score": "CAST(m.doub_score AS REAL)",
+    "years": "CAST(m.years AS INTEGER)",
+}
+_SORTS_NEEDING_MOVIES = {"score", "years"}
+
+
 def query_groups(page: int = 1, keyword: str = "", category: str = "",
-                 page_size: int = 20):
+                 page_size: int = 20, sort: str = "last"):
     """按影片分组浏览本地库：每组＝一部影片及其版本数。
 
-    组按"该片最新入库的种子"倒序。海报/年份/评分取自 movies 表
-    （未拉取详情的影片这几个字段为空，前端显示占位）。
+    sort：last=最新入库（默认）/ score=豆瓣评分 / years=年份 / versions=版本数。
+    海报、年份、评分取自 movies 表，未拉取详情的影片这几个字段为空（前端占位）。
+    keyword 除片名/种子名/影片 id 外，还匹配影片的原名、别名、导演、主演。
     返回 (rows, total_groups)。
     """
     conds, params = ["movie_id > ''"], []
@@ -387,25 +403,41 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
         conds.append("category = ?")
         params.append(category)
     if keyword:
-        conds.append("(movie_title LIKE ? OR title LIKE ? OR movie_id LIKE ?)")
         kw = f"%{keyword}%"
-        params += [kw, kw, kw]
+        # 原名/别名/导演/主演存在 movies 表里。用非相关 IN 子查询：SQLite 只会
+        # 求值一次并建临时索引，比逐行 EXISTS 相关子查询少一轮索引查找。
+        conds.append(
+            "(movie_title LIKE ? OR title LIKE ? OR movie_id LIKE ?"
+            " OR movie_id IN (SELECT idcode FROM movies"
+            "                 WHERE otitle LIKE ? OR alias LIKE ?"
+            "                    OR performer LIKE ? OR director LIKE ?))")
+        params += [kw] * 7
     where = " AND ".join(conds)
+    sort = sort if sort in _GROUP_SORT_EXPR else "last"
+    group_sql = (f"SELECT movie_id, MAX(movie_title) AS movie_title,"
+                 f"       COUNT(*) AS versions, MAX(id) AS last_id"
+                 f" FROM magnets WHERE {where} GROUP BY movie_id")
+    fields = ("g.movie_id, COALESCE(NULLIF(m.title, ''), g.movie_title) AS title,"
+              " g.versions, m.image, m.years, m.doub_score")
     with _db() as conn:
         total = conn.execute(
             f"SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE {where}",
             params).fetchone()[0]
-        # 先分组取出本页 20 组，再按主键左连 movies，避免先连再分组
-        rows = conn.execute(
-            f"""SELECT g.movie_id,
-                       COALESCE(NULLIF(m.title, ''), g.movie_title) AS title,
-                       g.versions, m.image, m.years, m.doub_score
-                FROM (SELECT movie_id, MAX(movie_title) AS movie_title,
-                             COUNT(*) AS versions, MAX(id) AS last_id
-                      FROM magnets WHERE {where}
-                      GROUP BY movie_id ORDER BY last_id DESC LIMIT ? OFFSET ?) g
-                LEFT JOIN movies m ON m.idcode = g.movie_id""",
-            [*params, page_size, (page - 1) * page_size]).fetchall()
+        if sort in _SORTS_NEEDING_MOVIES:
+            rows = conn.execute(
+                f"""SELECT {fields} FROM ({group_sql}) g
+                    LEFT JOIN movies m ON m.idcode = g.movie_id
+                    ORDER BY {_GROUP_SORT_EXPR[sort]} DESC, g.last_id DESC
+                    LIMIT ? OFFSET ?""",
+                [*params, page_size, (page - 1) * page_size]).fetchall()
+        else:
+            rows = conn.execute(
+                f"""SELECT {fields} FROM (
+                        {group_sql}
+                        ORDER BY {_GROUP_SORT_EXPR[sort]} DESC, last_id DESC
+                        LIMIT ? OFFSET ?) g
+                    LEFT JOIN movies m ON m.idcode = g.movie_id""",
+                [*params, page_size, (page - 1) * page_size]).fetchall()
     return rows, total
 
 

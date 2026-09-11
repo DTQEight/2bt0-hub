@@ -6,6 +6,7 @@ const state = {
   q: "",
   localCategory: "电影", // 本地库默认只看电影，可切电视剧 / 全部
   localView: "items", // items=全部版本 | groups=按片名分组
+  localSort: "last", // 海报墙排序：last=最新入库 | score=豆瓣评分 | years=年份 | versions=版本数
   movieId: "", // 非空＝正在看某部影片的全部版本
   movieTitle: "", // 该影片片名（分组接口带回，用于详情未拉取时兜底显示）
   prevRunning: false,
@@ -14,7 +15,7 @@ const state = {
 const TABS = {
   movie: { source: "bt0", sc: 1, hint: "搜片名，留空浏览最新电影种子…" },
   tv: { source: "bt0", sc: 2, hint: "搜片名，留空浏览最新电视剧种子…" },
-  local: { source: "local", sc: 0, hint: "搜本地库磁力（标题 / hash / 分类）…" },
+  local: { source: "local", sc: 0, hint: "搜片名/原名/别名/演员/导演/hash…" },
   sync: {},
   logs: {},
 };
@@ -23,7 +24,8 @@ const SECTIONS = { 1: "电影", 2: "电视剧" };
 
 const el = {};
 for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
-  "list-view", "cat-filter", "view-toggle", "movie-head", "sync-view", "sync-grid",
+  "list-view", "cat-filter", "view-toggle", "sort-select", "sort-by",
+  "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
   "sync-badge", "sync-badge-text", "sync-stop", "toast"]) {
   el[id] = document.getElementById(id);
@@ -103,11 +105,14 @@ function applySearchbar() {
   el.q.placeholder = t.hint || "搜索…";
 }
 
-// 分类筛选器与"按片名"视图开关都只在「本地磁力库」页出现
+// 分类筛选器、排序、视图开关都只在「本地磁力库」页出现
 function applyCatFilter() {
   const isLocal = state.tab === "local";
   el["cat-filter"].hidden = !isLocal;
   el["view-toggle"].hidden = !isLocal;
+  // 排序只对海报墙有意义（看某片版本时不显示）
+  el["sort-select"].hidden =
+    !(isLocal && state.localView === "groups" && !state.movieId);
   if (!isLocal) {
     el["movie-head"].replaceChildren();
     return;
@@ -220,7 +225,7 @@ function buildCard(item) {
 // ---- 本地库「按片名」分组视图 ----
 
 async function loadGroups(token) {
-  const params = new URLSearchParams({ page: state.page });
+  const params = new URLSearchParams({ page: state.page, sort: state.localSort });
   if (state.q) params.set("q", state.q);
   if (state.localCategory) params.set("category", state.localCategory);
 
@@ -884,6 +889,12 @@ el["cat-filter"].addEventListener("click", (e) => {
   state.movieId = "";
   state.movieTitle = "";
   applyCatFilter();
+  load();
+});
+
+el["sort-by"].addEventListener("change", () => {
+  state.localSort = el["sort-by"].value;
+  state.page = 1; // 换排序后回到第一页
   load();
 });
 

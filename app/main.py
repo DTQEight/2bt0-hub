@@ -147,11 +147,13 @@ async def groups(
     page: int = Query(1, ge=1),
     q: str = Query("", max_length=200),
     category: str = Query("", max_length=20, description="分类过滤：电影/电视剧，空为全部"),
+    sort: str = Query("last", max_length=10,
+                      description="排序：last=最新入库/score=豆瓣评分/years=年份/versions=版本数"),
 ) -> dict:
     """按影片分组浏览本地库：每组＝一部影片及其版本数"""
     try:
         rows, total = await asyncio.to_thread(
-            query_groups, page, q.strip(), category.strip(), GROUPS_PAGE_SIZE)
+            query_groups, page, q.strip(), category.strip(), GROUPS_PAGE_SIZE, sort)
     except Exception as exc:
         logger.exception("分组查询失败")
         raise HTTPException(status_code=502, detail=f"分组查询失败: {exc}") from exc
