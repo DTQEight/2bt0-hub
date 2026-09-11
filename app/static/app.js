@@ -123,12 +123,15 @@ function applyCatFilter() {
 
 // ---- 列表加载 ----
 
+let loadToken = 0; // 递增令牌：快速翻页/搜索时丢弃过期响应，避免慢请求覆盖新结果
+
 async function load() {
+  const token = ++loadToken;
   const t = TABS[state.tab];
   if (!t.source) return;
   // 本地库「按片名」视图走独立接口（分组结果不是磁力条目）
   if (state.tab === "local" && state.localView === "groups" && !state.movieId) {
-    return loadGroups();
+    return loadGroups(token);
   }
   const params = new URLSearchParams({ source: t.source, page: state.page });
   if (t.sc) params.set("sc", t.sc);
@@ -145,9 +148,11 @@ async function load() {
   try {
     const res = await fetch(`/api/items?${params}`);
     const data = await res.json();
+    if (token !== loadToken) return; // 已被更新的请求取代
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     renderList(data);
   } catch (err) {
+    if (token !== loadToken) return;
     el.status.className = "status error";
     el.status.textContent = `加载失败：${err.message}`;
   }
@@ -188,9 +193,12 @@ function buildCard(item) {
   if (item.magnet) {
     const hash = (item.extra?.info_hash) || (item.magnet.match(/btih:([0-9a-fA-F]+)/)?.[1] || "");
     actions.push(`<button type="button" class="act copy" data-magnet="${escapeHtml(item.magnet)}">复制磁力</button>`);
-    actions.push(`<a class="act" href="${escapeHtml(item.magnet)}">打开</a>`);
+    // 只对 magnet: 协议渲染直开链接，防止数据里混入 javascript: 等伪协议
+    if (/^magnet:/i.test(item.magnet)) {
+      actions.push(`<a class="act" href="${escapeHtml(item.magnet)}">打开</a>`);
+    }
     if (hash) actions.push(`<span class="hash" title="info_hash">${escapeHtml(hash.slice(0, 16))}…</span>`);
-  } else if (item.detail_url) {
+  } else if (item.detail_url && /^https?:\/\//i.test(item.detail_url)) {
     actions.push(`<a class="act" href="${escapeHtml(item.detail_url)}" target="_blank" rel="noopener noreferrer">官网详情 ↗</a>`);
   }
 
@@ -208,7 +216,7 @@ function buildCard(item) {
 
 // ---- 本地库「按片名」分组视图 ----
 
-async function loadGroups() {
+async function loadGroups(token) {
   const params = new URLSearchParams({ page: state.page });
   if (state.q) params.set("q", state.q);
   if (state.localCategory) params.set("category", state.localCategory);
@@ -222,9 +230,11 @@ async function loadGroups() {
   try {
     const res = await fetch(`/api/groups?${params}`);
     const data = await res.json();
+    if (token !== loadToken) return; // 已被更新的请求取代
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     renderGroups(data);
   } catch (err) {
+    if (token !== loadToken) return;
     el.status.className = "status error";
     el.status.textContent = `加载失败：${err.message}`;
   }
@@ -467,7 +477,9 @@ function syncCardHtml(sc, s) {
         ? `<div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
            <div class="progress-num">${pct}% · 第 ${fmtNum(curPage)} / ${fmtNum(total)} 页</div>`
         : `<div class="progress"><div class="progress-bar indeterminate"></div></div>
-           <div class="progress-num">正在探测板块总页数…</div>`)
+           <div class="progress-num">${s.mode === "update"
+             ? `增量更新中 · 第 ${fmtNum(s.page)} 页（连续 10 页无新资源即停）`
+             : "正在探测板块总页数…"}</div>`)
     : "";
 
   // 运行时数据行
@@ -647,7 +659,8 @@ function renderSyncPage(s, m) {
     btn.addEventListener("click", () => startSync(Number(btn.dataset.update), "update"));
   }
   for (const btn of el["sync-grid"].querySelectorAll("[data-stop]")) {
-    btn.addEventListener("click", stopSync);
+    // 卡片上的停止只停种子同步；顶栏停止按钮才会连影片详情任务一起停
+    btn.addEventListener("click", stopSectionSync);
   }
   const fetchBtn = el["sync-grid"].querySelector("[data-movie-fetch]");
   if (fetchBtn) fetchBtn.addEventListener("click", startMovieFetch);
@@ -691,6 +704,14 @@ async function startSync(section, mode) {
     showToast(`启动失败：${err.message}`);
   }
   refreshSyncUI(false);
+}
+
+// 板块卡片上的「停止」：只停种子同步，不影响同时跑着的影片详情任务
+async function stopSectionSync() {
+  try {
+    await fetch("/api/sync/stop", { method: "POST" });
+    showToast("正在停止同步…");
+  } catch { /* 忽略 */ }
 }
 
 async function stopSync() {

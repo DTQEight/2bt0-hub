@@ -147,15 +147,18 @@ def _search(keyword: str, page: int) -> PageResult:
     for row in rows:
         title = row.get("title") or "（无标题）"
         score = row.get("doub_score") or ""
-        if score and score != "@":
+        if score not in ("", "@", "0"):  # 0/@ 表示站点无评分，不展示
             title = f"{title} [豆瓣 {score}]"
+        # 详情页认的是 idcode（如 1432146），不是内部编号 id（如 10502，
+        # 用它拼 /mv/ 会 404「影视资料不存在或已被删除」）
+        idcode = str(row.get("idcode") or "")
         items.append(Item(
-            id=str(row.get("id") or row.get("idcode") or ""),
+            id=idcode,
             title=title,
             magnet="",  # 影片库无磁力；磁力在种子列表（浏览模式）里
             published_at=row.get("years") or "",
             category=row.get("class") or "",
-            detail_url=f"{BASE}/mv/{row.get('id')}" if row.get("id") else "",
+            detail_url=f"{BASE}/mv/{idcode}" if idcode else "",
         ))
     return PageResult(
         items=items,

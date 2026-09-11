@@ -10,8 +10,10 @@
   * 短页（不满 20 条）不视为末尾，正常入库继续
   * 连续 2 个空页后，向 +1/+5/+20/+100 页探查，全部为空才判定到头
 - 关键节点写 app.log，可在前端"日志"页实时查看
-- 单页失败自动重试（api_get 内 2 次）后仍失败不中断整体，只记录告警；
-  连续 12 页失败才终止（避免站点长时间故障导致无限循环）
+- 单页失败自动重试（api_get 内 2 次）后仍失败不中断整体，先记账；
+  主循环结束后把失败页统一补抓一轮（批内失败页会被后面的成功页
+  把断点"顶过去"，不补抓就永久漏页），补抓仍失败的写进结束消息
+- 连续 12 页失败才终止（避免站点长时间故障导致无限循环）
 """
 
 from __future__ import annotations
@@ -174,6 +176,8 @@ class SyncManager:
         early_stopped = False
         natural_end = False  # 仅当确认抓到板块真正末页时为 True（防误标"已完成"）
         new_total = 0        # 本次入库的新条数（增量更新用于结算提示）
+        failed_pages: list[int] = []  # 主循环中抓取失败的页，结束后补抓
+        still_failed: list[int] = []  # 补抓一轮后仍失败的页（写进结束消息）
         try:
             if mode != "update":
                 # 先探测板块末页（进度百分比 + ETA 用），约 18 个请求
@@ -199,6 +203,7 @@ class SyncManager:
                             break
                         if err:
                             err_streak += 1
+                            failed_pages.append(p)
                             self.state["message"] = f"第 {p} 页失败: {err[:80]}"
                             logger.warning("%s 第 %d 页抓取失败（连续第 %d 页）: %s",
                                            label, p, err_streak, err)
@@ -232,6 +237,30 @@ class SyncManager:
                     if end or self._stop.is_set():
                         break
                     page += workers
+            # 失败页补抓：批内失败页会被同批/后续成功页把断点"顶过去"，
+            # 不补抓就永久漏页（断点续抓只会从更靠后的页继续）
+            if failed_pages and not self._stop.is_set():
+                top = self.state["page"]
+                logger.info("%s 补抓失败页：%s", label, failed_pages)
+                for i, p in enumerate(failed_pages):
+                    if self._stop.is_set():
+                        still_failed.extend(failed_pages[i:])
+                        break
+                    rows, err = _fetch_page(section, p)
+                    if err or not rows:
+                        still_failed.append(p)
+                        continue
+                    new_total += max(0, self._save(section, p, rows, mode))
+                if mode != "update":
+                    # 补抓的页码更小会把断点写回头，恢复到最高已存页
+                    top = max(top, self.state["page"])
+                    set_sync_progress("bt0", section, top)
+                    self.state["page"] = top
+                if still_failed:
+                    preview = ", ".join(str(p) for p in still_failed[:8])
+                    logger.warning("%s 补抓后仍失败 %d 页：%s%s", label,
+                                   len(still_failed), preview,
+                                   "…" if len(still_failed) > 8 else "")
         except Exception as exc:  # 兜底：任何异常都不能让线程僵死在 running 状态
             self.state["message"] = f"同步异常终止: {exc}"
             logger.exception("%s 同步异常终止", label)
@@ -258,6 +287,11 @@ class SyncManager:
                 # 网络异常 / 连续失败 / 未知异常终止：保留断点，绝不标记完成
                 logger.warning("%s 同步未完成即终止（断点已保留在第 %d 页）：%s",
                                label, self.state["page"], self.state["message"] or "未知原因")
+            if still_failed:
+                preview = ", ".join(str(p) for p in still_failed[:8]) + \
+                    ("…" if len(still_failed) > 8 else "")
+                self.state["message"] = ((self.state["message"] or "同步结束")
+                                         + f"；{len(still_failed)} 页补抓后仍失败（{preview}）")
 
     def _save(self, sc: int, page: int, rows: list[dict], mode: str) -> int:
         """入库一页，返回本页新增条数（-1 表示入库失败，不计入增量判断）"""

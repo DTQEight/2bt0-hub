@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import math
 import os
 from pathlib import Path
@@ -30,7 +31,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler(DATA_DIR / "logs" / "app.log", encoding="utf-8"),
+        # 轮转日志：容器长期运行时避免 app.log 无限增长（/api/logs 只读当前文件）
+        logging.handlers.RotatingFileHandler(
+            DATA_DIR / "logs" / "app.log", maxBytes=5 * 1024 * 1024,
+            backupCount=3, encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
