@@ -207,9 +207,18 @@ function buildPager(page, totalPages) {
 
   add("‹ 上一页", page - 1, { disabled: page <= 1 });
 
-  // 页码窗口：始终含首尾与当前页附近
-  const win = new Set([1, totalPages, page - 1, page, page + 1]);
-  const sorted = [...win].filter((p) => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+  // 页码窗口：总页数少时全部列出；多时显示当前页左右各 RADIUS 页，并始终保留首尾页
+  const PLAIN_LIMIT = 15;  // 总页数不超过此值就直接全列，不做省略
+  const RADIUS = 4;        // 超出时当前页左右各显示几页
+  const win = new Set([1, totalPages]);
+  if (totalPages <= PLAIN_LIMIT) {
+    for (let p = 1; p <= totalPages; p++) win.add(p);
+  } else {
+    for (let p = page - RADIUS; p <= page + RADIUS; p++) {
+      if (p >= 1 && p <= totalPages) win.add(p);
+    }
+  }
+  const sorted = [...win].sort((a, b) => a - b);
   let last = 0;
   for (const p of sorted) {
     if (p - last > 1) {
