@@ -640,7 +640,8 @@ function renderSyncPage(s, m) {
     syncCardHtml(1, s) + syncCardHtml(2, s) + statsCardHtml(s) + movieTaskCardHtml(m);
   // 绑定按钮事件（innerHTML 重建后需重绑）
   for (const btn of el["sync-grid"].querySelectorAll("[data-full]")) {
-    btn.addEventListener("click", () => startSync(Number(btn.dataset.full)));
+    // 必须显式传 full：后端在未指定模式时，对"已全量完成"的板块会自动降级成增量更新
+    btn.addEventListener("click", () => startSync(Number(btn.dataset.full), "full"));
   }
   for (const btn of el["sync-grid"].querySelectorAll("[data-update]")) {
     btn.addEventListener("click", () => startSync(Number(btn.dataset.update), "update"));
