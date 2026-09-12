@@ -10,7 +10,8 @@
 
 - **双板块抓取**：电影、电视剧分开抓取、分开浏览（站点热门榜 3/4/5 不抓）
 - **三种同步模式**：断点续抓、增量更新（秒级追新）、全量重抓
-- **本地磁力库**：海报卡片墙（按片名分组，每页 24 部，可按最新入库/豆瓣评分/年份/版本数排序）与「全部版本」列表两种视图，支持分类筛选；搜索匹配片名、原名、别名、演员、导演、种子名与 info_hash
+- **本地磁力库**：海报卡片墙（按片名分组，每页 24 部，可按最新入库/评分最高/评分人数/上映时间/版本数排序）与「全部版本」列表两种视图，支持分类筛选；搜索匹配片名、原名、别名、演员、导演、种子名与 info_hash
+- **筛选条**：分类参考主站影片库（影视类型 / 制片地区 / 上映年份 / 资源画质 / 影视标签 五组标签 + 排序方式 + 高级筛选：评分人数、豆瓣评分区间、仅看 IMDb），站点那项「仅显示网盘资源」不做；可选项由本地库实际数据聚合，点了一定有结果
 - **影片详情卡**：点开某部影片后置顶展示，布局参考主站详情页（250×375 海报 + 片名年份 + 原名/别名 + 导演/主演/类型/地区/语言/片长 + 豆瓣与 IMDb 评分胶囊外链 + 剧情简介限高滚动）
 - **影片资料**：片名、原名、别名、年份、类型、地区、语言、片长、豆瓣/IMDB 评分、导演、主演、剧情简介
 - **每日定时增量**：到点自动对电影、电视剧依次追新，每个板块跑完自动跟进该板块的新片详情（海报/评分），开关与时间可在网页修改
@@ -91,7 +92,9 @@ app/
 
 影片级元数据按 `idcode` 唯一。一部影片平均对应十余个种子版本，长文本（简介、主演）只存一份。
 
-`idcode`（即豆瓣 subject id，可拼 `movie.douban.com/subject/{idcode}/`）、`title`、`otitle`、`alias`、`years`、`category`、`area`、`language`、`episodes`、`long_time`、`doub_score`、`doub_votes`（评价人数）、`imdb_id`、`imdb_score`、`imdb_votes`、`image`（海报 URL）、`director`、`performer`、`abstract`、`fetched_at`
+`idcode`（即豆瓣 subject id，可拼 `movie.douban.com/subject/{idcode}/`）、`title`、`otitle`、`alias`、`years`、`category`（类型）、`area`、`language`、`episodes`、`long_time`、`doub_score`、`doub_votes`（评价人数）、`imdb_id`、`imdb_score`、`imdb_votes`、`image`（海报 URL）、`director`、`performer`、`abstract`、`tags`（影视标签，逗号分隔）、`definition`（画质，逗号分隔）、`detail_ver`（详情版本）、`fetched_at`
+
+`tags` / `definition` 是筛选条用的两个字段（详情接口里就有，之前没存）。加进来时把 `detail_ver` 一并加上：版本低于当前的旧记录会计入「待拉取」，重拉一次补齐，否则老片永远筛不出标签和画质。
 
 ### 其他表
 
@@ -113,6 +116,7 @@ app/
 - 站点 API 的 `total` 字段不可信（恒为 400），页数由「连续空页 + 多级探测」判定
 - 顶部呼吸灯与「同步」页实时显示板块、页码、库内条数、速度与 ETA
 - 影片详情按板块并入电影/电视剧卡片：各自显示「已入库 / 待拉取」与独立进度条、速度、ETA 和「拉取详情」按钮；板块同步（全量/续抓/增量）跑完自动跟进本板块详情，详情跑完也会显示在顶栏呼吸灯上
+- 详情字段加了 `tags` / `definition` 之后，之前入库的影片算「待拉取」，需要在同步页点一次「拉取详情」重拉补齐（筛选条要靠这两个字段筛标签和画质）
 - 同步在服务端后台运行，关掉浏览器不受影响；重建容器也不丢进度
 
 ## 环境变量
@@ -129,7 +133,8 @@ app/
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
 | GET | `/api/items` | 抓取/浏览条目（`source`、`sc`、`q`、`page`、`category`、`movie_id`） |
-| GET | `/api/groups` | 本地库按片名分组（海报墙）：`q`、`category`、`sort`、`page` |
+| GET | `/api/groups` | 本地库按片名分组（海报墙）：`q`、`category`、`sort`、`page`；筛选 `ftype`/`farea`/`fyears`/`fquality`/`ftag`/`votes_min`/`score_min`/`score_max`/`imdb_only` |
+| GET | `/api/filters` | 筛选条可选项（`category` 可选）：只返回本地库确实有数据的标签 |
 | GET | `/api/movie/{idcode}` | 影片详情 |
 | POST | `/api/sync/start` | 启动同步（`section`、`mode`、`start_page`、`workers`） |
 | GET | `/api/sync/status` | 同步状态（进度、速度、ETA） |

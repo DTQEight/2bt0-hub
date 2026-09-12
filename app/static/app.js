@@ -6,7 +6,12 @@ const state = {
   q: "",
   localCategory: "电影", // 本地库默认只看电影，可切电视剧 / 全部
   localView: "items", // items=全部版本 | groups=按片名分组
-  localSort: "last", // 海报墙排序：last=最新入库 | score=豆瓣评分 | years=年份 | versions=版本数
+  localSort: "last", // 排序：last=最新入库 | score=评分最高 | votes=评分人数 | years=上映时间 | versions=版本数
+  // 筛选条（分类参考主站影片库筛选）：前五项是标签，其余是高级筛选
+  localFilters: {
+    ftype: "", farea: "", fyears: "", fquality: "", ftag: "",
+    votesMin: 0, scoreMin: 0, scoreMax: 10, imdbOnly: false,
+  },
   movieId: "", // 非空＝正在看某部影片的全部版本
   movieTitle: "", // 该影片片名（分组接口带回，用于详情未拉取时兜底显示）
   prevRunning: false,
@@ -22,9 +27,21 @@ const TABS = {
 
 const SECTIONS = { 1: "电影", 2: "电视剧" };
 
+// 排序方式（形态参考主站的「排序方式」标签行）
+const SORTS = [
+  ["last", "最新入库"],
+  ["score", "评分最高"],
+  ["votes", "评分人数"],
+  ["years", "上映时间"],
+  ["versions", "版本数"],
+];
+
+const VOTES_MAX = 500000; // 评分人数滑块上限（与主站一致）
+
 const el = {};
 for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
-  "list-view", "cat-filter", "view-toggle", "sort-select", "sort-by",
+  "list-view", "cat-filter", "view-toggle",
+  "filter-panel", "filter-body", "filter-toggle", "filter-active", "filter-reset",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
   "sync-badge", "sync-badge-text", "sync-stop", "toast"]) {
@@ -105,14 +122,14 @@ function applySearchbar() {
   el.q.placeholder = t.hint || "搜索…";
 }
 
-// 分类筛选器、排序、视图开关都只在「本地磁力库」页出现
+// 分类筛选器、视图开关、筛选条都只在「本地磁力库」页出现
 function applyCatFilter() {
   const isLocal = state.tab === "local";
   el["cat-filter"].hidden = !isLocal;
   el["view-toggle"].hidden = !isLocal;
-  // 排序只对海报墙有意义（看某片版本时不显示）
-  el["sort-select"].hidden =
-    !(isLocal && state.localView === "groups" && !state.movieId);
+  // 筛选条筛的是影片维度数据（类型/地区/年份/画质/标签/评分），只有海报墙视图才有
+  const showFilter = isLocal && state.localView === "groups" && !state.movieId;
+  el["filter-panel"].hidden = !showFilter;
   if (!isLocal) {
     el["movie-head"].replaceChildren();
     return;
@@ -125,6 +142,125 @@ function applyCatFilter() {
     btn.classList.toggle("active",
       !state.movieId && btn.dataset.view === state.localView);
   }
+  if (showFilter) ensureFilters(state.localCategory);
+}
+
+// ---- 筛选条（分类参考主站 2bt0.com 影片库筛选，去掉「仅显示网盘资源」） ----
+
+const filterCache = {}; // category → 各筛选组的可选项
+const filterPending = {}; // category → 是否正在请求（避免重复发）
+
+function filtersActive() {
+  const f = state.localFilters;
+  return !!(f.ftype || f.farea || f.fyears || f.fquality || f.ftag
+    || f.votesMin > 0 || f.scoreMin > 0 || f.scoreMax < 10 || f.imdbOnly);
+}
+
+// 评分人数下限：50000 → "5万"
+function fmtVotesMin(n) {
+  return n >= 10000 ? `${(n / 10000).toFixed(n % 10000 ? 1 : 0)}万` : String(n);
+}
+
+function scoreRangeText() {
+  const f = state.localFilters;
+  return !f.scoreMin && f.scoreMax >= 10 ? "不限" : `${f.scoreMin} - ${f.scoreMax}`;
+}
+
+// 可选项由后端按当前分类的库内实际数据聚合，没拉过的分类按需请求一次
+function ensureFilters(category) {
+  if (filterCache[category]) {
+    renderFilterPanel(filterCache[category]);
+    return;
+  }
+  if (filterPending[category]) return;
+  filterPending[category] = true;
+  fetch(`/api/filters?category=${encodeURIComponent(category)}`)
+    .then((r) => r.json())
+    .then((data) => {
+      filterCache[category] = data.groups || [];
+      // 期间可能已切走，只渲染当前仍需要的那份
+      if (state.tab === "local" && state.localCategory === category) {
+        renderFilterPanel(filterCache[category]);
+      }
+    })
+    .catch(() => { /* 拉不到就先不显示筛选条 */ })
+    .finally(() => { filterPending[category] = false; });
+}
+
+function filterTagHtml(key, value, label, active) {
+  return `<button type="button" class="filter-tag${active ? " active" : ""}"`
+    + ` data-fkey="${key}" data-fval="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+}
+
+function filterRowHtml(label, options) {
+  return `<div class="filter-row">
+      <span class="filter-label">${escapeHtml(label)}:</span>
+      <div class="filter-options">${options}</div>
+    </div>`;
+}
+
+// 高级筛选行：评分人数 / 豆瓣评分区间 / 仅看 IMDb（主站的「仅显示网盘资源」不做）
+function advFilterHtml() {
+  const f = state.localFilters;
+  return `<div class="filter-row">
+      <span class="filter-label">高级筛选:</span>
+      <div class="filter-options">
+        <label class="adv-item">评分人数 ≥
+          <input type="range" id="f-votes" min="0" max="${VOTES_MAX}" step="10000"
+                 value="${f.votesMin}" aria-label="评分人数下限">
+          <span class="adv-val" id="f-votes-val">${f.votesMin ? fmtVotesMin(f.votesMin) : "不限"}</span>
+        </label>
+        <label class="adv-item">豆瓣评分
+          <input type="range" id="f-score-min" min="0" max="10" step="0.5"
+                 value="${f.scoreMin}" aria-label="豆瓣评分下限">
+          <span class="adv-val" id="f-score-val">${scoreRangeText()}</span>
+          <input type="range" id="f-score-max" min="0" max="10" step="0.5"
+                 value="${f.scoreMax}" aria-label="豆瓣评分上限">
+        </label>
+        <label class="adv-item">
+          <input type="checkbox" id="f-imdb"${f.imdbOnly ? " checked" : ""}> 仅看 IMDb
+        </label>
+      </div>
+    </div>`;
+}
+
+function renderFilterPanel(groups) {
+  const f = state.localFilters;
+  const rows = groups.map((g) => filterRowHtml(g.label,
+    // 该维度还没数据（详情未拉取）时给句提示，别留一排空标签
+    g.options.length
+      ? filterTagHtml(g.key, "", "不限", !f[g.key])
+        + g.options.map((v) => filterTagHtml(g.key, v, v, f[g.key] === v)).join("")
+      : `<span class="filter-empty">拉取影片详情后可用</span>`)).join("");
+  const sortRow = filterRowHtml("排序方式", SORTS.map(([v, label]) =>
+    `<button type="button" class="filter-tag${state.localSort === v ? " active" : ""}"`
+    + ` data-sort="${v}">${label}</button>`).join(""));
+  el["filter-body"].innerHTML = rows + sortRow + advFilterHtml();
+  renderFilterSummary();
+}
+
+// 摘要行：一眼看清当前生效的条件，方便一条条撤掉
+function renderFilterSummary() {
+  const f = state.localFilters;
+  const parts = ["ftype", "farea", "fyears", "fquality", "ftag"]
+    .map((k) => f[k]).filter(Boolean);
+  if (f.votesMin) parts.push(`评分人数≥${fmtVotesMin(f.votesMin)}`);
+  if (f.scoreMin || f.scoreMax < 10) parts.push(`评分${f.scoreMin}-${f.scoreMax}`);
+  if (f.imdbOnly) parts.push("仅看 IMDb");
+  const sortLabel = (SORTS.find(([v]) => v === state.localSort) || SORTS[0])[1];
+  el["filter-active"].textContent =
+    parts.length ? `${parts.join(" · ")} · 排序：${sortLabel}` : `排序：${sortLabel}`;
+  el["filter-reset"].hidden = !filtersActive();
+}
+
+// 筛选条件变化：重画选中态与摘要，回到第一页重新查询
+function refreshFilters() {
+  state.page = 1;
+  state.movieId = "";
+  state.movieTitle = "";
+  applyCatFilter();
+  renderFilterSummary(); // 选项还没请求回来时也要更新摘要
+  load();
 }
 
 // ---- 列表加载 ----
@@ -228,6 +364,14 @@ async function loadGroups(token) {
   const params = new URLSearchParams({ page: state.page, sort: state.localSort });
   if (state.q) params.set("q", state.q);
   if (state.localCategory) params.set("category", state.localCategory);
+  const f = state.localFilters;
+  for (const key of ["ftype", "farea", "fyears", "fquality", "ftag"]) {
+    if (f[key]) params.set(key, f[key]);
+  }
+  if (f.votesMin > 0) params.set("votes_min", f.votesMin);
+  if (f.scoreMin > 0) params.set("score_min", f.scoreMin);
+  if (f.scoreMax < 10) params.set("score_max", f.scoreMax);
+  if (f.imdbOnly) params.set("imdb_only", "true");
 
   el.status.className = "status";
   el.status.textContent = "加载中…";
@@ -258,7 +402,10 @@ function renderGroups(data) {
   if (!groups.length) {
     const li = document.createElement("li");
     li.className = "empty";
-    li.textContent = state.q ? "没有匹配的影片" : "本地库还没有影片数据（影片信息随同步一起入库）";
+    // 有关键词或筛选条件时只是当前条件没命中，别说成库是空的
+    li.textContent = (state.q || filtersActive())
+      ? "当前条件下没有匹配的影片，试试换个筛选或关键词"
+      : "本地库还没有影片数据（影片信息随同步一起入库）";
     el.list.appendChild(li);
     return;
   }
@@ -941,10 +1088,61 @@ el["cat-filter"].addEventListener("click", (e) => {
   load();
 });
 
-el["sort-by"].addEventListener("change", () => {
-  state.localSort = el["sort-by"].value;
-  state.page = 1; // 换排序后回到第一页
-  load();
+// 筛选条：标签与排序用事件委托（innerHTML 每次重画都会换掉按钮）
+el["filter-body"].addEventListener("click", (e) => {
+  const btn = e.target.closest("button.filter-tag");
+  if (!btn) return;
+  if (btn.dataset.sort) {
+    state.localSort = btn.dataset.sort;
+  } else if (btn.dataset.fkey) {
+    state.localFilters[btn.dataset.fkey] = btn.dataset.fval;
+  } else {
+    return;
+  }
+  refreshFilters();
+});
+
+// 滑块拖动时只更新读数，松手（change）才真正重查
+el["filter-body"].addEventListener("input", (e) => {
+  const f = state.localFilters;
+  if (e.target.id === "f-votes") {
+    f.votesMin = Number(e.target.value);
+    document.getElementById("f-votes-val").textContent =
+      f.votesMin ? fmtVotesMin(f.votesMin) : "不限";
+  } else if (e.target.id === "f-score-min" || e.target.id === "f-score-max") {
+    const lo = document.getElementById("f-score-min");
+    const hi = document.getElementById("f-score-max");
+    let min = Number(lo.value);
+    let max = Number(hi.value);
+    if (min > max) { // 两端互相顶开，别让区间反着
+      if (e.target.id === "f-score-min") { max = min; hi.value = String(max); }
+      else { min = max; lo.value = String(min); }
+    }
+    f.scoreMin = min;
+    f.scoreMax = max;
+    document.getElementById("f-score-val").textContent = scoreRangeText();
+  }
+});
+
+el["filter-body"].addEventListener("change", (e) => {
+  if (e.target.id === "f-imdb") {
+    state.localFilters.imdbOnly = e.target.checked;
+    refreshFilters();
+  } else if (["f-votes", "f-score-min", "f-score-max"].includes(e.target.id)) {
+    refreshFilters();
+  }
+});
+
+el["filter-reset"].addEventListener("click", () => {
+  state.localFilters = { ftype: "", farea: "", fyears: "", fquality: "", ftag: "",
+                         votesMin: 0, scoreMin: 0, scoreMax: 10, imdbOnly: false };
+  refreshFilters();
+});
+
+// 手机屏幕窄，筛选条默认收起，避免一屏全是标签
+el["filter-toggle"].addEventListener("click", () => {
+  const collapsed = el["filter-body"].classList.toggle("collapsed");
+  el["filter-toggle"].setAttribute("aria-expanded", collapsed ? "false" : "true");
 });
 
 el["view-toggle"].addEventListener("click", (e) => {
@@ -961,5 +1159,9 @@ el["view-toggle"].addEventListener("click", (e) => {
 el["log-refresh"].addEventListener("click", loadLogs);
 
 // 初始化
+// 手机窄屏先收起筛选条（.collapsed 只在 ≤720px 的媒体查询里生效，桌面端无影响）
+if (window.matchMedia("(max-width: 720px)").matches) {
+  el["filter-body"].classList.add("collapsed");
+}
 switchTab("movie");
 refreshSyncUI(false); // 驱动顶栏同步徽标

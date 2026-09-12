@@ -214,26 +214,103 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
   flex-wrap: wrap;
 }
 
-.sort-select {
+/* 筛选条（分类参考主站影片库筛选）：一行一组标签，高级筛选行放滑块 */
+.filter-panel { padding-bottom: 14px; }
+
+.filter-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+}
+
+/* 折叠按钮只在窄屏出现（见文末媒体查询） */
+.filter-toggle { display: none; }
+
+.filter-active { font-size: 12.5px; color: var(--muted); }
+
+#filter-reset {
+  padding: 4px 12px;
+  font-size: 12.5px;
+  color: var(--red);
+}
+
+.filter-body { display: grid; gap: 6px; }
+
+.filter-row { display: flex; align-items: flex-start; gap: 10px; }
+
+.filter-label {
+  flex-shrink: 0;
+  width: 68px;
+  padding-top: 5px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.filter-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 标签按钮：覆盖全局 button 的边框/内边距，做成主站那种胶囊 */
+.filter-tag {
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.filter-tag:hover {
+  border-color: transparent;
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.filter-tag.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
+.adv-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-bottom: 12px;
-}
-
-.sort-select select {
-  padding: 6px 10px;
+  padding: 4px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--panel);
-  color: var(--text);
   font-size: 13px;
-  cursor: pointer;
-  outline: none;
+  color: var(--muted);
 }
 
-.sort-select select:hover,
-.sort-select select:focus { border-color: var(--accent); }
+.adv-item input[type="range"] {
+  width: 130px;
+  accent-color: var(--accent);
+}
+
+.adv-item input[type="checkbox"] { accent-color: var(--accent); }
+
+.adv-val {
+  min-width: 56px;
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* 该维度还没有数据时的占位提示 */
+.filter-empty {
+  padding-top: 5px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
 
 .vt-label { color: var(--muted); font-size: 13px; }
 
@@ -847,6 +924,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .mh-poster { width: 150px; }
   .mh-title { font-size: 21px; }
   .mh-meta { grid-template-columns: 1fr; }
+
+  /* 筛选条：五组标签很长，手机上折叠起来，按钮点开再看 */
+  .filter-toggle { display: inline-block; padding: 7px 14px; }
+  .filter-body.collapsed { display: none; }
+  /* 标签换行后左对齐，右侧不再留出标签列的空白 */
+  .filter-row { flex-direction: column; gap: 2px; }
+  .filter-label { width: auto; text-align: left; padding-top: 0; }
+  .adv-item { padding: 4px 10px; }
+  .adv-item input[type="range"] { width: 96px; }
 }
 
 /* 手机竖屏 */
@@ -858,13 +944,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .tabs button { padding: 8px 12px; }
   .cat-filter button, .view-toggle button { padding: 8px 14px; }
   .logs-refresh { padding: 9px 14px; }
-  .sort-select select { padding: 9px 10px; }
+  .filter-tag { padding: 7px 13px; }
 
   /* 输入框字号 ≥16px，否则 iOS Safari 聚焦时会自动放大整页 */
   .searchbar input,
   .topbar .searchbar input,
   .pager-jump input,
-  .sort-select select,
   .sched-select { font-size: 16px; }
 
   /* 版本卡片改成竖排，操作按钮独占一行 */

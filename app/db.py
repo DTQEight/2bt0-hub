@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS movies (
     director TEXT DEFAULT '',
     performer TEXT DEFAULT '',
     abstract TEXT DEFAULT '',
+    tags TEXT DEFAULT '',
+    definition TEXT DEFAULT '',
+    detail_ver INTEGER DEFAULT 0,
     fetched_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -134,9 +137,13 @@ def init_db() -> None:
                 if name not in cols:
                     conn.execute(f"ALTER TABLE magnets ADD COLUMN {name} TEXT DEFAULT ''")
             vcols = {r["name"] for r in conn.execute("PRAGMA table_info(movies)")}
-            for name in ("doub_votes", "imdb_votes", "image"):
+            for name in ("doub_votes", "imdb_votes", "image", "tags", "definition"):
                 if name not in vcols:
                     conn.execute(f"ALTER TABLE movies ADD COLUMN {name} TEXT DEFAULT ''")
+            # detail_ver：详情字段版本。补 tags/definition 之前的旧记录为 0，
+            # 会被计入「待拉取」重新抓一次（否则旧片永远筛不出标签和画质）
+            if "detail_ver" not in vcols:
+                conn.execute("ALTER TABLE movies ADD COLUMN detail_ver INTEGER DEFAULT 0")
             conn.executescript(_INDEXES)
 
 
@@ -319,38 +326,42 @@ def get_stats() -> dict:
 _MOVIE_FIELDS = ("idcode", "title", "otitle", "alias", "years", "category", "area",
                  "language", "episodes", "long_time", "doub_score", "doub_votes",
                  "imdb_id", "imdb_score", "imdb_votes", "image",
-                 "director", "performer", "abstract")
+                 "director", "performer", "abstract", "tags", "definition")
+
+# 详情数据版本：加了 tags/definition 之后递增，库内低于此值的记录会重新拉取
+DETAIL_VER = 1
 
 
 def upsert_movies(rows: list[dict]) -> int:
     """保存/更新一批影片详情，按 idcode 覆盖。返回写入条数。"""
-    values = [tuple(str(r.get(f) or "").strip() for f in _MOVIE_FIELDS) + (_now(),)
+    values = [tuple(str(r.get(f) or "").strip() for f in _MOVIE_FIELDS) + (_now(), DETAIL_VER)
               for r in rows if str(r.get("idcode") or "").strip()]
     if not values:
         return 0
-    cols = ", ".join(_MOVIE_FIELDS) + ", fetched_at"
-    ph = ",".join("?" * (len(_MOVIE_FIELDS) + 1))
+    cols = ", ".join(_MOVIE_FIELDS) + ", fetched_at, detail_ver"
+    ph = ",".join("?" * (len(_MOVIE_FIELDS) + 2))
     updates = ", ".join(f"{f}=excluded.{f}" for f in _MOVIE_FIELDS[1:])
     with _LOCK:
         with _db() as conn:
             conn.executemany(
                 f"""INSERT INTO movies ({cols}) VALUES ({ph})
                     ON CONFLICT(idcode) DO UPDATE SET {updates},
-                        fetched_at=excluded.fetched_at""",
+                        fetched_at=excluded.fetched_at,
+                        detail_ver=excluded.detail_ver""",
                 values,
             )
     return len(values)
 
 
 def pending_movie_ids(category: str = "") -> list[str]:
-    """种子里出现过、但 movies 表还没有详情的影片 id（供批量拉取详情）。
+    """种子里出现过、但详情没拉过（或版本过旧需重拉）的影片 id。
 
     category 非空时只取该分类（电影/电视剧）的影片，用于按板块分开拉详情。
     """
     sql = ("SELECT DISTINCT m.movie_id FROM magnets m"
            " LEFT JOIN movies v ON v.idcode = m.movie_id"
-           " WHERE m.movie_id != '' AND v.idcode IS NULL")
-    params: list = []
+           " WHERE m.movie_id != '' AND (v.idcode IS NULL OR v.detail_ver < ?)")
+    params: list = [DETAIL_VER]
     if category:
         sql += " AND m.category = ?"
         params.append(category)
@@ -378,22 +389,26 @@ def movie_stats(category: str = "") -> dict:
     hit = _movie_stats_cache.get(category)
     if hit is not None and now - hit[0] < _STATS_TTL:
         return hit[1]
+    # 待拉取 = 没拉过，或拉过的详情版本过旧（缺 tags/definition）需重拉
+    stale = f"(v.idcode IS NULL OR v.detail_ver < {DETAIL_VER})"
     if category:
         wanted_sql = ("SELECT COUNT(DISTINCT movie_id) FROM magnets"
                       " WHERE movie_id > '' AND category = ?")
+        wanted_params: list = [category]
         pending_sql = ("SELECT COUNT(DISTINCT m.movie_id) FROM magnets m"
                        " LEFT JOIN movies v ON v.idcode = m.movie_id"
-                       " WHERE m.movie_id > '' AND m.category = ? AND v.idcode IS NULL")
-        params: list = [category]
+                       f" WHERE m.movie_id > '' AND m.category = ? AND {stale}")
+        pending_params: list = [category]
     else:
         wanted_sql = "SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE movie_id > ''"
+        wanted_params = []
         pending_sql = ("SELECT COUNT(DISTINCT m.movie_id) FROM magnets m"
                        " LEFT JOIN movies v ON v.idcode = m.movie_id"
-                       " WHERE m.movie_id > '' AND v.idcode IS NULL")
-        params = []
+                       f" WHERE m.movie_id > '' AND {stale}")
+        pending_params = []
     with _db() as conn:
-        wanted = conn.execute(wanted_sql, params).fetchone()[0]
-        pending = conn.execute(pending_sql, params).fetchone()[0]
+        wanted = conn.execute(wanted_sql, wanted_params).fetchone()[0]
+        pending = conn.execute(pending_sql, pending_params).fetchone()[0]
     # 待拉取的必然也在 wanted 里，相减即已入库，省一次全表 COUNT
     result = {"fetched": wanted - pending, "wanted": wanted, "pending": pending}
     _movie_stats_cache[category] = (now, result)
@@ -401,26 +416,103 @@ def movie_stats(category: str = "") -> dict:
 
 
 def invalidate_movie_stats() -> None:
-    """清空影片统计缓存（详情批量入库后调用，避免页面继续显示旧数字）"""
+    """清空影片统计与筛选选项缓存（详情批量入库后调用，避免页面继续显示旧数字）"""
     _movie_stats_cache.clear()
+    _filter_options_cache.clear()
 
 
 # 海报墙排序：值 → ORDER BY 表达式。last/versions 取自分组结果，可以先分页再
-# 连 movies（只连本页 24 行）；score/years 在 movies 表里，必须先连接全部组再排序。
+# 连 movies（只连本页 24 行）；score/years/votes 在 movies 表里，必须先连接全部组再排序。
 _GROUP_SORT_EXPR = {
     "last": "last_id",
     "versions": "versions",
     "score": "CAST(m.doub_score AS REAL)",
     "years": "CAST(m.years AS INTEGER)",
+    "votes": "CAST(m.doub_votes AS INTEGER)",
 }
-_SORTS_NEEDING_MOVIES = {"score", "years"}
+_SORTS_NEEDING_MOVIES = {"score", "years", "votes"}
+
+
+# ---- 筛选条（分类参考主站 2bt0.com 影片库筛选，去掉「仅显示网盘资源」）----
+
+# 五组标签及先后顺序，与站点 getVideoTypeList 的 t1~t5 一致
+FILTER_GROUPS = (
+    ("ftype", "影视类型", ("喜剧", "剧情", "动作", "爱情", "科幻", "动画", "悬疑", "惊悚",
+                       "恐怖", "犯罪", "同性", "音乐", "歌舞", "传记", "历史", "战争",
+                       "西部", "奇幻", "冒险", "灾难", "武侠", "真人秀", "纪录片")),
+    ("farea", "制片地区", ("大陆", "欧美", "美国", "香港", "台湾", "日本", "韩国", "英国",
+                       "法国", "德国", "西班牙", "印度", "泰国", "俄罗斯", "加拿大",
+                       "澳大利亚", "瑞典", "巴西")),
+    ("fyears", "上映年份", ("近三年", "2026", "2025", "2024", "2023", "2022", "2021", "2020",
+                        "2019", "2018", "2017", "20年代", "10年代", "00年代", "90年代",
+                        "80年代", "更早")),
+    ("fquality", "资源画质", ("HDTV", "WEB-1080P", "WEB-4K", "1080P蓝光", "1080P-Remux",
+                          "4K蓝光", "4K-Remux", "3D", "杜比视界", "蓝光原盘",
+                          "4K蓝光原盘", "枪版")),
+    ("ftag", "影视标签", ("心理", "冷门", "人性", "丧尸", "搞笑", "吸血鬼", "温情", "魔幻")),
+)
+
+# 站点标签「大陆/香港/台湾」在库里存的是全称；「欧美」是聚合标签，按一组国家匹配
+_AREA_RENAME = {"大陆": "中国大陆", "香港": "中国香港", "台湾": "中国台湾"}
+_AREA_ALIAS = {v: k for k, v in _AREA_RENAME.items()}
+_AREA_EUROPE = ("美国", "英国", "法国", "德国", "意大利", "西班牙", "葡萄牙", "荷兰",
+                "比利时", "瑞士", "奥地利", "瑞典", "挪威", "丹麦", "芬兰", "波兰",
+                "爱尔兰", "卢森堡", "希腊", "捷克", "俄罗斯", "加拿大", "澳大利亚",
+                "新西兰")
+_TERM_SPLIT = re.compile(r"[,，、]+")
+
+
+def _split_terms(value: str) -> list[str]:
+    """拆分逗号/顿号分隔的多值字段（类型、地区、画质、标签都是这种格式）"""
+    return [t.strip() for t in _TERM_SPLIT.split(value or "") if t.strip()]
+
+
+def _filter_cond(key: str, value) -> tuple[str, list] | None:
+    """把一个筛选项翻译成 movies 表的 WHERE 条件（无法识别时返回 None）"""
+    if key == "ftype":
+        return "category LIKE ?", [f"%{value}%"]
+    if key == "farea":
+        if value == "欧美":
+            return ("(" + " OR ".join("area LIKE ?" for _ in _AREA_EUROPE) + ")",
+                    [f"%{a}%" for a in _AREA_EUROPE])
+        return "area LIKE ?", [f"%{_AREA_RENAME.get(str(value), value)}%"]
+    if key == "fquality":
+        return "definition LIKE ?", [f"%{value}%"]
+    if key == "ftag":
+        return "tags LIKE ?", [f"%{value}%"]
+    if key == "fyears":
+        s = str(value)
+        if s == "近三年":
+            return "CAST(years AS INTEGER) >= ?", [datetime.now().year - 2]
+        if s == "更早":
+            # 0 是空值/非数字年份转出来的，需要排除
+            return "CAST(years AS INTEGER) < 1980 AND CAST(years AS INTEGER) > 0", []
+        if re.fullmatch(r"\d{4}", s):
+            return "years LIKE ?", [f"{s}%"]
+        m = re.fullmatch(r"(\d{2})年代", s)
+        if m:
+            start = int(m.group(1))
+            start = start + 1900 if start >= 30 else start + 2000
+            return "CAST(years AS INTEGER) BETWEEN ? AND ?", [start, start + 9]
+    elif key == "votes_min":
+        return "CAST(doub_votes AS INTEGER) >= ?", [int(value)]
+    elif key == "score_min":
+        return "CAST(doub_score AS REAL) >= ?", [float(value)]
+    elif key == "score_max":
+        return "CAST(doub_score AS REAL) <= ?", [float(value)]
+    elif key == "imdb_only":
+        return "imdb_score != '' AND imdb_score != '0'", []
+    return None
 
 
 def query_groups(page: int = 1, keyword: str = "", category: str = "",
-                 page_size: int = 20, sort: str = "last"):
+                 page_size: int = 20, sort: str = "last", filters: dict | None = None):
     """按影片分组浏览本地库：每组＝一部影片及其版本数。
 
-    sort：last=最新入库（默认）/ score=豆瓣评分 / years=年份 / versions=版本数。
+    sort：last=最新入库（默认）/ score=豆瓣评分 / votes=评分人数 / years=年份 /
+          versions=版本数。
+    filters：筛选条条件（ftype/farea/fyears/fquality/ftag/votes_min/score_min/
+            score_max/imdb_only），值来自文件名前缀，除高级筛选项外都是标签文字。
     海报、年份、评分取自 movies 表，未拉取详情的影片这几个字段为空（前端占位）。
     keyword 除片名/种子名/影片 id 外，还匹配影片的原名、别名、导演、主演。
     返回 (rows, total_groups)。
@@ -429,6 +521,20 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
     if category:
         conds.append("category = ?")
         params.append(category)
+    # 影片级条件（类型/地区/年份/画质/标签/评分…）都落在 movies 表，用非相关
+    # IN 子查询过滤，SQLite 只会求值一次并建临时索引，不影响分组扫描
+    mconds, mparams = [], []
+    for key, value in (filters or {}).items():
+        if not value:
+            continue
+        cond = _filter_cond(key, value)
+        if cond:
+            mconds.append(cond[0])
+            mparams += cond[1]
+    if mconds:
+        conds.append("movie_id IN (SELECT idcode FROM movies WHERE "
+                     + " AND ".join(mconds) + ")")
+        params += mparams
     if keyword:
         kw = f"%{keyword}%"
         # 原名/别名/导演/主演存在 movies 表里。用非相关 IN 子查询：SQLite 只会
@@ -466,6 +572,72 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
                     LEFT JOIN movies m ON m.idcode = g.movie_id""",
                 [*params, page_size, (page - 1) * page_size]).fetchall()
     return rows, total
+
+
+_FILTER_TTL = 120  # 秒：筛选选项缓存时长（聚合要扫一遍影片表）
+_filter_options_cache: dict = {}
+
+
+def filter_options(category: str = "") -> dict:
+    """筛选条的可选项：只列出本地库确实有数据的标签，按站点顺序排列。
+
+    category 为空时统计全部影片。没拉过详情的影片没有这些字段，自然不会出现在
+    选项里，所以每个选项点下去都能出结果；站点分类之外、库里确实存在的值补在末尾。
+    """
+    now = time.monotonic()
+    hit = _filter_options_cache.get(category)
+    if hit is not None and now - hit[0] < _FILTER_TTL:
+        return hit[1]
+
+    counters: dict[str, dict[str, int]] = {key: {} for key, _, _ in FILTER_GROUPS}
+    # 只统计被种子引用过的影片，避免把没有磁力的影片算进选项
+    sql = ("SELECT v.category, v.area, v.years, v.definition, v.tags FROM movies v"
+           " WHERE v.idcode IN (SELECT DISTINCT movie_id FROM magnets"
+           "                    WHERE movie_id > ''")
+    params: list = []
+    if category:
+        sql += " AND category = ?"
+        params.append(category)
+    sql += ")"
+    with _db() as conn:
+        for row in conn.execute(sql, params):
+            for term in _split_terms(row["category"]):
+                counters["ftype"][term] = counters["ftype"].get(term, 0) + 1
+            for term in _split_terms(row["area"]):
+                term = _AREA_ALIAS.get(term, term)  # 中国大陆 → 大陆（站点口径）
+                counters["farea"][term] = counters["farea"].get(term, 0) + 1
+            for term in _split_terms(row["definition"]):
+                counters["fquality"][term] = counters["fquality"].get(term, 0) + 1
+            for term in _split_terms(row["tags"]):
+                counters["ftag"][term] = counters["ftag"].get(term, 0) + 1
+            m = re.match(r"(\d{4})", (row["years"] or "").strip())
+            if m:
+                counters["fyears"][m.group(1)] = counters["fyears"].get(m.group(1), 0) + 1
+
+    # 年份里有几个区间派生标签（近三年 / X0年代 / 更早），按实际年份折算是否可选
+    years = {int(k): n for k, n in counters["fyears"].items() if k.isdigit()}
+    for decade in (2020, 2010, 2000, 1990, 1980):
+        counters["fyears"][f"{decade // 10 % 10 * 10}年代"] = sum(
+            n for y, n in years.items() if decade <= y <= decade + 9)
+    counters["fyears"]["近三年"] = sum(
+        n for y, n in years.items() if y >= datetime.now().year - 2)
+    counters["fyears"]["更早"] = sum(n for y, n in years.items() if y < 1980)
+    # 「欧美」同样是聚合口径：库里只要有这些国家的影片即可选
+    counters["farea"]["欧美"] = sum(counters["farea"].get(a, 0) for a in _AREA_EUROPE)
+
+    groups = []
+    for key, label, std in FILTER_GROUPS:
+        counts = counters[key]
+        options = [t for t in std if counts.get(t)]
+        # 站点分类之外、库里确实存在的值（如画质「其他」、标签「经典」）补在末尾；
+        # 年份不补：库里每个具体年份都能成按钮的话，这一行会长到没法看
+        if key != "fyears":
+            options += sorted((t for t, n in counts.items() if n and t not in std),
+                              key=lambda t: (-counts[t], t))[:10]
+        groups.append({"key": key, "label": label, "options": options})
+    result = {"groups": groups}
+    _filter_options_cache[category] = (now, result)
+    return result
 
 
 # ---- 全量同步进度（断点续抓） ----

@@ -13,7 +13,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from db import get_movie, get_sync_progress, init_db, query_groups, upsert_items
+from db import (filter_options, get_movie, get_sync_progress, init_db, query_groups,
+                upsert_items)
 from movies import movie_detail_manager
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
@@ -148,12 +149,33 @@ async def groups(
     q: str = Query("", max_length=200),
     category: str = Query("", max_length=20, description="分类过滤：电影/电视剧，空为全部"),
     sort: str = Query("last", max_length=10,
-                      description="排序：last=最新入库/score=豆瓣评分/years=年份/versions=版本数"),
+                      description="排序：last=最新入库/score=豆瓣评分/votes=评分人数/"
+                                  "years=年份/versions=版本数"),
+    ftype: str = Query("", max_length=30, description="筛选：影视类型"),
+    farea: str = Query("", max_length=30, description="筛选：制片地区"),
+    fyears: str = Query("", max_length=20, description="筛选：上映年份"),
+    fquality: str = Query("", max_length=30, description="筛选：资源画质"),
+    ftag: str = Query("", max_length=30, description="筛选：影视标签"),
+    votes_min: int = Query(0, ge=0, le=50_000_000, description="筛选：评分人数下限"),
+    score_min: float = Query(0, ge=0, le=10, description="筛选：豆瓣评分下限"),
+    score_max: float = Query(10, ge=0, le=10, description="筛选：豆瓣评分上限"),
+    imdb_only: bool = Query(False, description="筛选：仅看有 IMDb 评分的影片"),
 ) -> dict:
-    """按影片分组浏览本地库：每组＝一部影片及其版本数"""
+    """按影片分组浏览本地库：每组＝一部影片及其版本数（可带筛选条条件）"""
+    filters = {
+        "ftype": ftype.strip(), "farea": farea.strip(), "fyears": fyears.strip(),
+        "fquality": fquality.strip(), "ftag": ftag.strip(),
+        "votes_min": votes_min, "imdb_only": imdb_only,
+    }
+    # 评分区间只在偏离默认值时才作为条件，避免把库里没有评分的影片全过滤掉
+    if score_min > 0:
+        filters["score_min"] = score_min
+    if score_max < 10:
+        filters["score_max"] = score_max
     try:
         rows, total = await asyncio.to_thread(
-            query_groups, page, q.strip(), category.strip(), GROUPS_PAGE_SIZE, sort)
+            query_groups, page, q.strip(), category.strip(), GROUPS_PAGE_SIZE, sort,
+            filters)
     except Exception as exc:
         logger.exception("分组查询失败")
         raise HTTPException(status_code=502, detail=f"分组查询失败: {exc}") from exc
@@ -163,6 +185,13 @@ async def groups(
         "total_pages": max(1, math.ceil(total / GROUPS_PAGE_SIZE)),
         "total_groups": total,
     }
+
+
+@app.get("/api/filters")
+async def filters(category: str = Query("", max_length=20,
+                                        description="分类：电影/电视剧，空为全部")) -> dict:
+    """本地库筛选条的可选项（分类参考主站影片库筛选，只列出库里确实有的标签）"""
+    return await asyncio.to_thread(filter_options, category.strip())
 
 
 @app.get("/api/movie/{idcode}")

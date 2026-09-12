@@ -39,21 +39,21 @@
           <button type="button" data-cat="">全部</button>
         </div>
         <div class="filters-right">
-          <div class="sort-select" id="sort-select" hidden>
-            <span class="vt-label">排序</span>
-            <select id="sort-by">
-              <option value="last">最新入库</option>
-              <option value="score">豆瓣评分</option>
-              <option value="years">年份</option>
-              <option value="versions">版本数</option>
-            </select>
-          </div>
           <div class="view-toggle" id="view-toggle" hidden>
             <span class="vt-label">视图</span>
             <button type="button" data-view="items">全部版本</button>
             <button type="button" data-view="groups">按片名</button>
           </div>
         </div>
+      </div>
+      <!-- 筛选条：分类参考主站影片库筛选（仅「本地磁力库 · 按片名」视图可用） -->
+      <div class="filter-panel" id="filter-panel" hidden>
+        <div class="filter-head">
+          <button type="button" id="filter-toggle" aria-expanded="false">筛选条件 ▾</button>
+          <span class="filter-active" id="filter-active"></span>
+          <button type="button" id="filter-reset" hidden>清空筛选</button>
+        </div>
+        <div class="filter-body" id="filter-body"></div>
       </div>
       <div id="movie-head"></div>
       <div id="status" class="status">加载中…</div>
