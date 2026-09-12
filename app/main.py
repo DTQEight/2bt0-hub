@@ -8,6 +8,8 @@ import logging.handlers
 import math
 import os
 import re
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -45,16 +47,33 @@ logger = logging.getLogger("resource-hub")
 
 init_db()  # 本地磁力库建表
 
-# 容器启动时若存在未完成的同步断点，自动续抓（重建容器也不丢进度）
-_pending = get_sync_progress("bt0")
-if _pending:
-    _sec = min(_pending)
-    try:
-        sync_manager.start(_sec, start_page=_pending[_sec] + 1, mode="resume")
-        logger.info("检测到未完成断点，自动续抓：%s（板块 %d）从第 %d 页",
-                    SECTIONS[_sec], _sec, _pending[_sec] + 1)
-    except Exception:
-        logger.exception("自动续抓启动失败，可稍后手动点击同步按钮")
+
+def _auto_resume() -> None:
+    """容器启动：把存在断点的板块依次自动续抓（电影跑完接着跑电视剧）。
+
+    同步器是单实例（一次只能跑一个板块），所以在后台线程里串行接力，
+    否则只有最小板块号的那个能恢复，另一个断点会一直闲置；
+    手动停止其中一个板块后，剩余板块不再自动启动。
+    """
+    pending = get_sync_progress("bt0")
+    for sec in sorted(pending):
+        if sync_manager._stop.is_set():  # 上一个板块是被手动停掉的
+            logger.info("自动续抓已手动停止，剩余板块不再自动启动")
+            break
+        try:
+            sync_manager.start(sec, start_page=pending[sec] + 1, mode="resume")
+            logger.info("检测到未完成断点，自动续抓：%s（板块 %d）从第 %d 页",
+                        SECTIONS[sec], sec, pending[sec] + 1)
+        except Exception:
+            logger.exception("自动续抓启动失败（板块 %d），可稍后手动点击同步按钮", sec)
+            continue
+        while sync_manager.state["running"]:
+            time.sleep(2)
+
+
+# 容器启动时若存在未完成的同步断点，后台线程自动续抓（重建容器也不丢进度）
+if get_sync_progress("bt0"):
+    threading.Thread(target=_auto_resume, name="auto-resume", daemon=True).start()
 
 start_scheduler()  # 每日定时增量更新（电影 + 电视剧）
 

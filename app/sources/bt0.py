@@ -60,9 +60,12 @@ def api_get(endpoint: str, params: dict) -> dict:
             try:
                 data = r.json()
             except ValueError as exc:
-                # requests 的 JSONDecodeError 同时继承 RequestException，
-                # 必须在内层单独捕获，否则会被下面的网络重试分支误判为重试
-                raise SourceError(f"2bt0 接口返回非 JSON: {exc}") from exc
+                # 非 JSON 多为网关/CDN 偶发错误页（HTML），与网络抖动一样值得重试。
+                # requests.JSONDecodeError 同时继承 RequestException，须先在内层
+                # 捕获并转成普通 RequestException，才能落进下面的重试分支，
+                # 而不是带着原始解码错误直接漏出去
+                raise requests.RequestException(
+                    f"2bt0 接口返回非 JSON: {exc}") from exc
             if not data.get("success"):
                 raise SourceError(f"接口返回错误: {data.get('message') or data}")
             return data.get("data") or {}

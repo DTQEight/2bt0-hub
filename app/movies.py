@@ -116,7 +116,9 @@ class MovieDetailManager:
     def _run(self, pending: list[str]) -> None:
         err_streak = 0
         failed_ids: list[str] = []  # 详情失败的影片 id，跑完统一补抓一轮
-        poster_ids: list[str] = []  # 详情成功但海报没存下来的 id，跑完也补一轮
+        # 详情成功但海报没存下来的 id：主循环和失败补抓都可能记入，
+        # 用 set 去重，否则海报补抓轮会重复请求、仍缺统计也会偏大
+        poster_ids: set[str] = set()
         poster_missing = 0          # 补抓后仍缺的海报数（用于收尾提示）
         batch: list[dict] = []
         aborted = ""
@@ -139,7 +141,7 @@ class MovieDetailManager:
                             batch.append(res)
                             # 详情成功但海报没下来（图床限流/TLS 被掐断），记下来跑完补
                             if res.get("image") and not res.get("poster_path"):
-                                poster_ids.append(mid)
+                                poster_ids.add(mid)
                     if len(batch) >= BATCH_SIZE:
                         upsert_movies(batch)
                         batch.clear()
@@ -167,7 +169,7 @@ class MovieDetailManager:
                         self.state["failed"] -= 1
                         batch.append(res)
                         if res.get("image") and not res.get("poster_path"):
-                            poster_ids.append(mid)
+                            poster_ids.add(mid)
                 if recovered:
                     logger.info("补抓成功 %d/%d 部，仍失败 %d 部",
                                 recovered, len(failed_ids), self.state["failed"])

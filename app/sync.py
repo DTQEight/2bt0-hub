@@ -245,7 +245,9 @@ class SyncManager:
                         break
                     page += workers
             # 失败页补抓：批内失败页会被同批/后续成功页把断点"顶过去"，
-            # 不补抓就永久漏页（断点续抓只会从更靠后的页继续）
+            # 不补抓就永久漏页（断点续抓只会从更靠后的页继续）。
+            # 补抓期间不写断点（补抓页码更小，中途写回会让断点倒退），
+            # 全部补完再把断点恢复到最高已存页
             if failed_pages and not self._stop.is_set():
                 top = self.state["page"]
                 logger.info("%s 补抓失败页：%s", label, failed_pages)
@@ -257,10 +259,9 @@ class SyncManager:
                     if err or not rows:
                         still_failed.append(p)
                         continue
-                    new_total += max(0, self._save(section, p, rows, mode))
+                    new_total += max(0, self._save(section, p, rows, mode,
+                                                   write_progress=False))
                 if mode != "update":
-                    # 补抓的页码更小会把断点写回头，恢复到最高已存页
-                    top = max(top, self.state["page"])
                     set_sync_progress("bt0", section, top)
                     self.state["page"] = top
                 if still_failed:
@@ -318,7 +319,8 @@ class SyncManager:
         except (ValueError, RuntimeError) as exc:
             logger.info("影片详情：无需拉取（%s）", exc)
 
-    def _save(self, sc: int, page: int, rows: list[dict], mode: str) -> int:
+    def _save(self, sc: int, page: int, rows: list[dict], mode: str,
+              write_progress: bool = True) -> int:
         """入库一页，返回本页新增条数（-1 表示入库失败，不计入增量判断）"""
         label = SECTIONS[sc]
         items = [{
@@ -339,8 +341,10 @@ class SyncManager:
         self.state["page"] = page
         self.state["fetched"] += len(rows)
         self._samples.append((time.monotonic(), page))  # 速度采样
-        # 增量模式不记断点（重跑很快，且断点会干扰续抓语义）
-        if mode != "update":
+        # 增量模式不记断点（重跑很快，且断点会干扰续抓语义）；
+        # write_progress=False 供失败页补抓用：补抓页码比断点小，写下去一旦
+        # 中途崩溃/重启，断点回退会让重启后大面积重抓
+        if mode != "update" and write_progress:
             set_sync_progress("bt0", sc, page)
         if page % 10 == 0 or len(rows) < 20:
             logger.info("%s 第 %d 页完成，本次已抓 %d 条%s", label, page,

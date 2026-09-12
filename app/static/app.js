@@ -880,12 +880,14 @@ function syncCardHtml(sc, s, m) {
     ${isDone ? `<div class="sync-row"><span>状态</span><span>可增量更新追新</span></div>` : ""}
   `;
 
-  // 按钮组：全量 / 增量分开
+  // 按钮组：全量 / 增量分开。同步器是单实例：任一板块在跑，
+  // 两张卡片的启动按钮都要禁用（否则点了只会收到 409）
+  const syncBusy = !!s.running;
   const fullBtnLabel = isRunning ? "同步进行中…"
     : prog ? `继续全量同步（第 ${fmtNum(prog + 1)} 页起）` : "开始全量同步";
-  const fullDisabled = isRunning ? "disabled" : "";
-  const updateDisabled = isRunning || !isDone
-    ? `disabled title="${isRunning ? "同步进行中" : "完成全量同步后可用"}"` : "";
+  const fullDisabled = syncBusy ? `disabled title="同步进行中"` : "";
+  const updateDisabled = syncBusy || !isDone
+    ? `disabled title="${syncBusy ? "同步进行中" : "完成全量同步后可用"}"` : "";
   const stopBtn = isRunning ? `<button type="button" class="stop" data-stop="1">停止</button>` : "";
 
   return `
@@ -961,7 +963,7 @@ function statsCardHtml(s) {
   const cats = s.by_category || {};
   const other = Object.entries(cats)
     .filter(([k]) => k !== SECTIONS[1] && k !== SECTIONS[2])
-    .map(([k, v]) => `${k} ${fmtNum(v)}`).join(" · ");
+    .map(([k, v]) => `${escapeHtml(k)} ${fmtNum(v)}`).join(" · ");
   return `
     <div class="sync-card stats">
       <div class="sync-card-head"><h3>本地数据库</h3><span class="sbadge done">SQLite</span></div>

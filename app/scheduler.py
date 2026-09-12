@@ -76,10 +76,15 @@ def backup_database() -> None:
     """备份数据库：VACUUM INTO 生成带日期的紧凑快照，只保留最近 BACKUP_KEEP 份"""
     backup_dir = DATA_DIR / "backups"
     target = backup_dir / f"magnets-{datetime.now():%Y%m%d}.db"
+    # VACUUM INTO 目标已存在时会报错（同一天再次触发：手动跑增量/时区跳变）。
+    # 先写临时名再原子替换，避免"删旧之后备份失败"两手空空
+    tmp = target.with_name(target.name + ".tmp")
     try:
-        backup_to(target)
+        backup_to(tmp)
+        os.replace(tmp, target)
     except Exception:
         logger.exception("数据库备份失败（不影响同步）")
+        tmp.unlink(missing_ok=True)
         return
     logger.info("数据库已备份：%s（%.1f MB）", target.name,
                 target.stat().st_size / 1048576)

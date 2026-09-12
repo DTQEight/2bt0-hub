@@ -52,12 +52,23 @@ def _sniff_ext(data: bytes, url: str) -> str:
     return suffix if suffix in ("jpg", "jpeg", "png", "webp", "gif", "avif") else "jpg"
 
 
+# 海报扩展名是固定的几种（见 _sniff_ext 与 /posters/ 的白名单）
+_POSTER_EXTS = ("jpg", "jpeg", "png", "webp", "gif", "avif")
+
+
 def find(idcode: str) -> str:
-    """该影片已缓存的海报文件名（未缓存返回空串）"""
+    """该影片已缓存的海报文件名（未缓存返回空串）。
+
+    直接按扩展名逐个 stat：Path.glob 要枚举整个目录做名称匹配，
+    海报目录涨到几十万文件后单次未命中查询要几十毫秒（stat 仅 0.05ms），
+    详情批量拉取时每部影片都要查一次，glob 会把任务拖慢数小时。
+    """
     if not idcode:
         return ""
-    for p in poster_dir().glob(f"{idcode}.*"):
-        if p.is_file() and p.suffix != ".part":
+    d = poster_dir()
+    for ext in _POSTER_EXTS:
+        p = d / f"{idcode}.{ext}"
+        if p.is_file():
             return p.name
     return ""
 
