@@ -17,6 +17,9 @@
 
 * { box-sizing: border-box; }
 
+/* 移动端横屏时禁止 iOS 自动放大字号 */
+html { -webkit-text-size-adjust: 100%; }
+
 /* 必须显式覆盖：作者样式里的 display（如 .cat-filter{display:flex}）
    优先级高于浏览器默认的 [hidden]{display:none}，否则 hidden 会失效 */
 [hidden] { display: none !important; }
@@ -809,22 +812,102 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---- 响应式 ---- */
 
-/* 窄屏允许换行，避免顶栏元素被压得过窄 */
+/* 小笔记本 / 平板：顶栏允许换行，海报墙列宽下限调小 */
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; }
   .topbar .searchbar { max-width: none; }
+
+  /* 下限 140px：手机竖屏（可用宽约 350px）也能铺满两列，而不是挤成一列 */
+  #list.poster-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 16px 12px;
+  }
 }
 
+/* 手机 / 小平板：顶栏分两行（品牌 + 搜索 / 可横滑的 Tab 条），同步时徽标另起一行 */
 @media (max-width: 720px) {
+  .topbar { gap: 8px 10px; padding: 10px 14px; }
+  .brand { order: 1; }
+  .brand h1 { font-size: 15px; }
+  .topbar .searchbar { order: 2; flex: 1 1 140px; min-width: 0; }
+  /* 徽标文案很长，独占一行当状态条用，避免把搜索框挤成 0 宽 */
+  .sync-badge { order: 4; flex: 1 1 100%; margin-left: 0; font-size: 12.5px; }
+  /* Tab 条独占一行并横向滑动：既不换行，也不挤压其它元素 */
+  .tabs {
+    order: 3;
+    flex: 1 1 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex-shrink: 0; padding: 6px 11px; font-size: 13px; }
+
   .movie-head { flex-direction: column; gap: 16px; padding: 16px; }
   .mh-poster { width: 150px; }
   .mh-title { font-size: 21px; }
   .mh-meta { grid-template-columns: 1fr; }
 }
 
+/* 手机竖屏 */
 @media (max-width: 640px) {
-  .topbar { gap: 10px; padding: 10px 14px; }
   main { padding: 14px 14px 40px; }
-  .card { flex-direction: column; align-items: flex-start; }
-  .log-box { height: calc(100vh - 260px); }
+
+  /* 触控目标抬到 40px 上下，手指好点 */
+  button, .act { padding: 10px 16px; }
+  .tabs button { padding: 8px 12px; }
+  .cat-filter button, .view-toggle button { padding: 8px 14px; }
+  .logs-refresh { padding: 9px 14px; }
+  .sort-select select { padding: 9px 10px; }
+
+  /* 输入框字号 ≥16px，否则 iOS Safari 聚焦时会自动放大整页 */
+  .searchbar input,
+  .topbar .searchbar input,
+  .pager-jump input,
+  .sort-select select,
+  .sched-select { font-size: 16px; }
+
+  /* 版本卡片改成竖排，操作按钮独占一行 */
+  .card { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .card-actions { width: 100%; }
+  /* 种子名很长，手机上给两行再截断 */
+  .card-title {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  /* 海报墙固定两列：自适应在手机上会剩 1 列，图会大得离谱 */
+  #list.poster-grid { grid-template-columns: repeat(2, 1fr); gap: 14px 10px; }
+  .pc-title { font-size: 13px; }
+  .pc-noimg { padding: 8px; font-size: 12px; }
+
+  .sync-grid { grid-template-columns: 1fr; }
+  .sync-card { padding: 16px; }
+
+  .movie-head { padding: 14px; gap: 14px; }
+  .mh-poster { width: 130px; }
+  .mh-title { font-size: 19px; }
+  /* 片名较长时让「返回」按钮换到下一行，而不是把标题挤成一列字 */
+  .mh-headline { flex-wrap: wrap; }
+  .mh-otitle { font-size: 14px; margin-bottom: 12px; }
+  .mh-ratings { gap: 8px; }
+  .mh-rating { padding: 6px 10px; }
+  .mh-summary p { font-size: 14px; }
+
+  .pager { gap: 5px; }
+  .pager button { min-width: 34px; padding: 8px 10px; }
+  .pager-jump { margin-left: 0; }
+
+  /* 100dvh：把移动浏览器的地址栏高度算进去，日志区不会被截断 */
+  .log-box {
+    height: calc(100vh - 300px);
+    height: calc(100dvh - 300px);
+    min-height: 220px;
+    padding: 12px;
+    font-size: 11.5px;
+  }
+
+  .toast { bottom: 20px; max-width: calc(100vw - 32px); }
 }
