@@ -121,15 +121,23 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-# 索引单独建：idx_magnets_movie 依赖 movie_id 列，必须在旧库补列之后执行
+# 索引单独建：idx_magnets_movie_group 依赖 movie_id 列，必须在旧库补列之后执行
 _INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_magnets_id ON magnets(id);
 CREATE INDEX IF NOT EXISTS idx_magnets_category ON magnets(category);
 CREATE INDEX IF NOT EXISTS idx_magnets_last_seen ON magnets(last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_magnets_movie ON magnets(movie_id);
--- (category, movie_id)：按片名分组浏览时通常带分类过滤，命中它可省掉 GROUP BY 的临时 B 树
--- （82 万行实测：加索引前 5.6 秒，加后 0.35 秒）
-CREATE INDEX IF NOT EXISTS idx_magnets_cat_movie ON magnets(category, movie_id);
+-- (movie_id, id, movie_title)：按片名分组浏览要算 COUNT(*)/MAX(id)/MAX(movie_title)，
+-- 单列 movie_id 索引不覆盖这三列，SQLite 只能拿索引键逐行回表——全量同步后 99.99%
+-- 的磁力都带 movie_id（82 万行实测 35 秒）。并进索引后变成纯覆盖索引扫描，实测
+-- 1.5 秒（索引 15MB → 30MB）。
+CREATE INDEX IF NOT EXISTS idx_magnets_movie_group ON magnets(movie_id, id, movie_title);
+DROP INDEX IF EXISTS idx_magnets_movie;  -- 已被上面更宽的索引取代，避免重复维护
+-- (category, movie_id, id, movie_title)：同上，用于带分类过滤的分组浏览（电影/电视剧
+-- Tab 默认走这条）。只到 (category, movie_id) 时仍要逐行回表取 movie_title/id，与上面
+-- 同样的原因，实测 17.4 秒；补全后 0.9 秒（索引 23MB → 37MB）。
+CREATE INDEX IF NOT EXISTS idx_magnets_cat_movie_group
+    ON magnets(category, movie_id, id, movie_title);
+DROP INDEX IF EXISTS idx_magnets_cat_movie;  -- 已被上面更宽的索引取代
 -- 演职人员按人名筛选（「点演员看全部作品」）：movie_id 由主键前缀覆盖，无需再建
 CREATE INDEX IF NOT EXISTS idx_people_name ON movie_people(name);
 -- 索引用途说明：
@@ -137,8 +145,9 @@ CREATE INDEX IF NOT EXISTS idx_people_name ON movie_people(name);
 --   category         → get_stats() 的 GROUP BY category，以及本地库按分类筛选后分页定位本页首行
 --                      （id 即 rowid，故该单列索引对 SELECT id 是覆盖索引）
 --   last_seen_at     → get_stats() 的 MAX(last_seen_at)
---   movie_id         → "该片的全部版本"分页定位（idx_magnets_movie 对 SELECT id 是覆盖索引）
---   (category,movie_id) → 按片名分组浏览（GROUP BY movie_id，带分类过滤）
+--   (movie_id,id,movie_title) → 按片名分组浏览的 GROUP BY，以及"该片的全部版本"分页定位
+--                      （对 SELECT id 与 movie_title 都是覆盖索引）
+--   (category,movie_id,id,movie_title) → 按片名分组浏览（GROUP BY movie_id，带分类过滤）
 -- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索是
 -- LIKE '%kw%'（前置通配符无法走 B-tree 索引），也没有按 source 过滤的语句。
 -- 二者在 82 万行时占用约 93MB 并拖慢每行写入，故不再创建，并清理存量。
