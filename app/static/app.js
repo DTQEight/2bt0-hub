@@ -104,12 +104,12 @@ function fallbackCopy(text, done) {
 
 // ---- Tab 切换 ----
 
-function switchTab(tab) {
+function switchTab(tab, push = true) {
   state.tab = tab;
   state.page = 1;
   state.q = "";
   state.movieId = "";
-  el.q.value = "";
+  state.movieTitle = "";
   // 切 Tab 时按该 Tab 的定位复位视图与板块：电影/电视剧看各自板块的片名海报墙，
   // 本地磁力库看全部板块的全部版本列表
   const cfg = TABS[tab];
@@ -117,6 +117,14 @@ function switchTab(tab) {
     state.localView = cfg.view;
     state.localCategory = cfg.category;
   }
+  activateTab();
+  if (push) pushHistory();
+}
+
+// 按 state.tab 渲染骨架（Tab 高亮、区块显隐、搜索框回填）并加载对应内容。
+// 切 Tab 与浏览器后退/前进恢复视图共用这一段
+function activateTab() {
+  const tab = state.tab;
   for (const btn of el.tabs.querySelectorAll("button")) {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   }
@@ -125,6 +133,7 @@ function switchTab(tab) {
   el["list-view"].hidden = !isList;
   el["sync-view"].hidden = tab !== "sync";
   el["logs-view"].hidden = tab !== "logs";
+  el.q.value = state.q; // 搜索框内容跟随视图状态（后退恢复时也要回填）
   applyCatFilter();
   if (tab === "logs") {
     stopSyncPolling();
@@ -142,6 +151,41 @@ function switchTab(tab) {
     }
   }
 }
+
+// ---- 浏览器后退 / 前进 ----
+// 所有视图变化都把完整状态压入 history：点进影片详情后按「返回」是回海报墙，
+// 而不是离开本站（此前没有 pushState，第一次按返回就退出应用了）
+function snapshotState() {
+  return {
+    tab: state.tab, page: state.page, q: state.q, person: state.person,
+    localCategory: state.localCategory, localView: state.localView,
+    localSort: state.localSort, localFilters: { ...state.localFilters },
+    movieId: state.movieId, movieTitle: state.movieTitle,
+  };
+}
+
+function pushHistory() {
+  history.pushState({ rh: snapshotState() }, "");
+}
+
+function restoreState(s) {
+  state.tab = s.tab;
+  state.page = s.page;
+  state.q = s.q;
+  state.person = s.person;
+  state.localCategory = s.localCategory;
+  state.localView = s.localView;
+  state.localSort = s.localSort;
+  state.movieId = s.movieId;
+  state.movieTitle = s.movieTitle;
+  state.localFilters = { ...s.localFilters };
+  activateTab();
+}
+
+// 退到进入本站之前的历史条目时没有我们的状态，不拦截，让浏览器正常离开
+window.addEventListener("popstate", (e) => {
+  if (e.state && e.state.rh) restoreState(e.state.rh);
+});
 
 function applySearchbar() {
   const t = TABS[state.tab];
@@ -393,6 +437,7 @@ function refreshFilters() {
   state.movieId = "";
   state.movieTitle = "";
   el["sort-by"].value = state.localSort;
+  pushHistory();
   applyCatFilter();
   renderFilterSummary(); // 选项还没请求回来时也要更新摘要
   load();
@@ -583,6 +628,7 @@ function openMovie(id, title) {
   state.page = 1;
   state.q = "";
   el.q.value = "";
+  pushHistory();
   applyCatFilter();
   load();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -593,6 +639,7 @@ function backToGroups() {
   state.movieTitle = "";
   state.page = 1;
   state.localView = "groups";
+  pushHistory();
   applyCatFilter();
   load();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -740,6 +787,7 @@ function buildPager(page, totalPages) {
     if (opts.disabled) btn.disabled = true;
     btn.addEventListener("click", () => {
       state.page = target;
+      pushHistory();
       load();
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
@@ -787,6 +835,7 @@ function buildPager(page, totalPages) {
     if (bounded) n = Math.min(n, totalPages);
     if (n === page) { input.value = String(page); return; }
     state.page = n;
+    pushHistory();
     load();
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -1226,6 +1275,7 @@ el["search-form"].addEventListener("submit", (e) => {
   state.page = 1;
   state.movieId = ""; // 搜索针对整个库，退出单片视图
   state.movieTitle = "";
+  pushHistory();
   applyCatFilter();
   load();
 });
@@ -1239,6 +1289,7 @@ el["cat-filter"].addEventListener("click", (e) => {
   state.page = 1;
   state.movieId = "";
   state.movieTitle = "";
+  pushHistory();
   applyCatFilter();
   load();
 });
@@ -1314,6 +1365,7 @@ el["movie-head"].addEventListener("click", (e) => {
   state.movieId = ""; // 退出该影片的版本列表，回到片名海报墙
   state.movieTitle = "";
   state.page = 1;
+  pushHistory();
   applyCatFilter(); // 详情卡视图里筛选条是隐藏的，回海报墙要恢复可见
   renderFilterSummary();
   load();
@@ -1335,5 +1387,6 @@ el["log-refresh"].addEventListener("click", loadLogs);
 // 初始化
 // 手机窄屏默认收起筛选条，避免一屏全是标签（桌面端保持展开）
 setFilterCollapsed(window.matchMedia("(max-width: 720px)").matches);
-switchTab("movie");
+switchTab("movie", false); // 初始渲染不压历史：第一次按「返回」离开本站才是对的
 refreshSyncUI(false); // 驱动顶栏同步徽标
+history.replaceState({ rh: snapshotState() }, ""); // 给当前历史条目挂上初始状态
