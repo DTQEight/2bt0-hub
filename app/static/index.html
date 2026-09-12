@@ -33,23 +33,28 @@
   <main>
     <section id="list-view">
       <div class="filters" id="filters">
+        <!-- 只有「本地磁力库」（全部版本列表）需要切板块；电影/电视剧 Tab 已固定各自板块 -->
         <div class="cat-filter" id="cat-filter" hidden>
           <button type="button" data-cat="电影">电影</button>
           <button type="button" data-cat="电视剧">电视剧</button>
           <button type="button" data-cat="">全部</button>
         </div>
-        <div class="filters-right">
-          <div class="view-toggle" id="view-toggle" hidden>
-            <span class="vt-label">视图</span>
-            <button type="button" data-view="items">全部版本</button>
-            <button type="button" data-view="groups">按片名</button>
-          </div>
-        </div>
       </div>
-      <!-- 筛选条：分类参考主站影片库筛选（仅「本地磁力库 · 按片名」视图可用） -->
+      <!-- 筛选条：分类参考主站影片库筛选（电影 / 电视剧 Tab 的片名海报墙里显示）
+           排序做成头部常驻的下拉，不用展开就可用；下方 body 只放五组分类标签 -->
       <div class="filter-panel" id="filter-panel" hidden>
         <div class="filter-head">
           <button type="button" id="filter-toggle" aria-expanded="false">筛选条件 ▾</button>
+          <label class="sort-select" id="sort-select">
+            <span class="vt-label">排序</span>
+            <select id="sort-by">
+              <option value="last">最新入库</option>
+              <option value="score">评分最高</option>
+              <option value="votes">评分人数</option>
+              <option value="years">上映时间</option>
+              <option value="versions">版本数</option>
+            </select>
+          </label>
           <span class="filter-active" id="filter-active"></span>
           <button type="button" id="filter-reset" hidden>清空筛选</button>
         </div>

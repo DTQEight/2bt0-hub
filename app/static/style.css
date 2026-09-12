@@ -197,17 +197,8 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
   background: var(--panel-2);
 }
 
-/* 筛选行：左侧分类，右侧视图切换 */
+/* 板块筛选行（只有「本地磁力库」用得到） */
 .filters {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-/* 筛选行右侧：排序 + 视图切换 */
-.filters-right {
   display: flex;
   align-items: flex-start;
   gap: 16px;
@@ -225,10 +216,27 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
   padding-bottom: 8px;
 }
 
-/* 折叠按钮只在窄屏出现（见文末媒体查询） */
-.filter-toggle { display: none; }
+/* 筛选条折叠按钮：窄屏默认收起，桌面端也能手动收起这五排标签 */
+.filter-toggle { padding: 6px 14px; font-size: 13px; }
 
 .filter-active { font-size: 12.5px; color: var(--muted); }
+
+/* 排序：头部常驻下拉，不展开筛选条也能改（手机上尤其有用） */
+.sort-select { display: flex; align-items: center; gap: 8px; }
+
+.sort-select select {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+}
+
+.sort-select select:hover,
+.sort-select select:focus { border-color: var(--accent); }
 
 #filter-reset {
   padding: 4px 12px;
@@ -237,6 +245,9 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
 }
 
 .filter-body { display: grid; gap: 6px; }
+
+/* 收起状态：五组标签较长，收起后只留头部的排序与摘要 */
+.filter-body.collapsed { display: none; }
 
 .filter-row { display: flex; align-items: flex-start; gap: 10px; }
 
@@ -280,30 +291,186 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
   background: var(--panel-2);
 }
 
-.adv-item {
-  display: flex;
+/* 高级筛选：标签触发器 + 滑出弹层（对齐主站 noUiSlider 弹层的观感） */
+.adv-item { position: relative; display: flex; }
+
+.filter-tag.interactive {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
+  gap: 4px;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.filter-tag.interactive:hover { border-color: var(--accent); color: var(--accent); }
+
+.filter-tag.interactive.popup-open {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
+.dropdown-arrow { font-size: 10px; line-height: 1; }
+
+.filter-modal {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  /* z-index 取 5：在卡片之上、吸顶栏（10）之下 */
+  z-index: 5;
+  width: 260px;
+  max-width: calc(100vw - 40px);
+  padding: 14px 12px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--panel-2);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.filter-modal.range-modal { width: 240px; }
+
+.slider-box { padding: 2px 4px 0; }
+
+.range-slider { position: relative; height: 20px; }
+
+.range-slider .rs-track,
+.range-slider .rs-fill {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
+}
+
+.range-slider .rs-track { left: 0; right: 0; background: #262c36; }
+.range-slider .rs-fill { background: var(--accent); }
+/* 单手柄从最左端起，双手柄由 left/right 定位出中间已选段 */
+.range-slider:not(.dual) .rs-fill { left: 0; }
+.range-slider.dual .rs-fill { right: 0; }
+
+/* 手柄：白芯 + 主题色描边，和主站一致 */
+.range-slider .rs-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: none;
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+}
+
+/* 双手柄时轨道不接管事件（否则上面那根输入框会吞掉所有点击，
+   另一个手柄就抓不到了），只让滑块本身可拖 */
+.range-slider.dual .rs-input { pointer-events: none; }
+
+.range-slider.dual .rs-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+}
+
+.range-slider.dual .rs-input::-moz-range-thumb {
+  pointer-events: auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+}
+
+.range-slider.dual .rs-input::-moz-range-track { background: none; }
+
+/* 单手柄（评分人数）：整条轨道都能点，和主站一样随手点一下就跳到位 */
+.range-slider:not(.dual) .rs-input {
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.range-slider:not(.dual) .rs-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+}
+
+.range-slider:not(.dual) .rs-input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+}
+
+.range-slider:not(.dual) .rs-input::-moz-range-track { background: none; }
+
+/* 刻度：0 / 10万 / … / 50万，按百分比定位，与主站的 pips 一样对齐轨道 */
+.rs-pips {
+  position: relative;
+  height: 16px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rs-pips span {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.rs-pips span::before { content: ""; width: 1px; height: 4px; background: var(--border); }
+
+.rs-readout {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.modal-actions button { padding: 4px 14px; border-radius: 999px; font-size: 12.5px; }
+
+.modal-actions .primary { border-color: var(--accent); color: var(--accent); }
+
+.adv-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
   font-size: 13px;
   color: var(--muted);
 }
 
-.adv-item input[type="range"] {
-  width: 130px;
-  accent-color: var(--accent);
-}
-
-.adv-item input[type="checkbox"] { accent-color: var(--accent); }
-
-.adv-val {
-  min-width: 56px;
-  color: var(--text);
-  font-size: 12.5px;
-  white-space: nowrap;
-}
+.adv-check input { accent-color: var(--accent); }
 
 /* 该维度还没有数据时的占位提示 */
 .filter-empty {
@@ -313,26 +480,6 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
 }
 
 .vt-label { color: var(--muted); font-size: 13px; }
-
-.view-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 12px;
-}
-
-.view-toggle button {
-  padding: 6px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.view-toggle button.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--panel-2);
-}
 
 button, .act {
   padding: 8px 16px;
@@ -925,14 +1072,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .mh-title { font-size: 21px; }
   .mh-meta { grid-template-columns: 1fr; }
 
-  /* 筛选条：五组标签很长，手机上折叠起来，按钮点开再看 */
-  .filter-toggle { display: inline-block; padding: 7px 14px; }
-  .filter-body.collapsed { display: none; }
+  /* 筛选条：五组标签很长，手机上默认收起（初始收起态见 JS），按钮点开再看 */
+  .filter-toggle { padding: 7px 14px; }
   /* 标签换行后左对齐，右侧不再留出标签列的空白 */
   .filter-row { flex-direction: column; gap: 2px; }
   .filter-label { width: auto; text-align: left; padding-top: 0; }
-  .adv-item { padding: 4px 10px; }
-  .adv-item input[type="range"] { width: 96px; }
+  /* 弹层在窄屏收窄，按钮抬到触控尺寸 */
+  .filter-modal { width: 236px; }
+  .modal-actions button { padding: 7px 16px; }
 }
 
 /* 手机竖屏 */
@@ -942,7 +1089,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   /* 触控目标抬到 40px 上下，手指好点 */
   button, .act { padding: 10px 16px; }
   .tabs button { padding: 8px 12px; }
-  .cat-filter button, .view-toggle button { padding: 8px 14px; }
+  .cat-filter button { padding: 8px 14px; }
   .logs-refresh { padding: 9px 14px; }
   .filter-tag { padding: 7px 13px; }
 
@@ -950,6 +1097,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .searchbar input,
   .topbar .searchbar input,
   .pager-jump input,
+  .sort-select select,
   .sched-select { font-size: 16px; }
 
   /* 版本卡片改成竖排，操作按钮独占一行 */
