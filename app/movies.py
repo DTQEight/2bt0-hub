@@ -115,7 +115,9 @@ class MovieDetailManager:
 
     def _run(self, pending: list[str]) -> None:
         err_streak = 0
-        failed_ids: list[str] = []  # 失败的影片 id，跑完统一补抓一轮
+        failed_ids: list[str] = []  # 详情失败的影片 id，跑完统一补抓一轮
+        poster_ids: list[str] = []  # 详情成功但海报没存下来的 id，跑完也补一轮
+        poster_missing = 0          # 补抓后仍缺的海报数（用于收尾提示）
         batch: list[dict] = []
         aborted = ""
         try:
@@ -135,6 +137,9 @@ class MovieDetailManager:
                         else:
                             err_streak = 0
                             batch.append(res)
+                            # 详情成功但海报没下来（图床限流/TLS 被掐断），记下来跑完补
+                            if res.get("image") and not res.get("poster_path"):
+                                poster_ids.append(mid)
                     if len(batch) >= BATCH_SIZE:
                         upsert_movies(batch)
                         batch.clear()
@@ -161,9 +166,30 @@ class MovieDetailManager:
                         recovered += 1
                         self.state["failed"] -= 1
                         batch.append(res)
+                        if res.get("image") and not res.get("poster_path"):
+                            poster_ids.append(mid)
                 if recovered:
                     logger.info("补抓成功 %d/%d 部，仍失败 %d 部",
                                 recovered, len(failed_ids), self.state["failed"])
+            # 海报补抓：详情拿到了但海报没存下来的，串行再试一轮。图床对 4 线程并发
+            # 敏感（实测单张约 2.2 秒，并发时常直接掐断 TLS），这里退回单线程且失败
+            # 即累加，连续失败说明是图床在系统性拦截，停止空耗。
+            if not aborted and not self._stop.is_set() and poster_ids:
+                time.sleep(3)
+                logger.info("补抓缺失海报 %d 张（串行，避开图床并发限流）", len(poster_ids))
+                got = pstreak = 0
+                for mid in poster_ids:
+                    if self._stop.is_set() or pstreak >= MAX_ERR_STREAK:
+                        break
+                    res = self._fetch_one(mid)
+                    if res is not None and res.get("poster_path"):
+                        got += 1
+                        pstreak = 0
+                        batch.append(res)
+                    else:
+                        pstreak += 1
+                poster_missing = len(poster_ids) - got
+                logger.info("海报补抓完成：成功 %d 张，仍缺 %d 张", got, poster_missing)
         except Exception as exc:  # 兜底：任何异常都不能让线程僵死在 running 状态
             aborted = f"异常终止: {exc}"
             logger.exception("影片详情拉取异常终止")
@@ -183,10 +209,13 @@ class MovieDetailManager:
             elif aborted:
                 self.state["message"] = f"{aborted}（本次完成 {self.state['done']} 部）"
             else:
-                self.state["message"] = (f"拉取完成：共 {self.state['done']} 部"
-                                         f"（失败 {self.state['failed']}）")
-                logger.info("影片详情拉取完成：共 %d 部，失败 %d 部",
-                            self.state["done"], self.state["failed"])
+                msg = (f"拉取完成：共 {self.state['done']} 部"
+                       f"（失败 {self.state['failed']}）")
+                if poster_missing:
+                    msg += f"；海报仍缺 {poster_missing} 张"
+                self.state["message"] = msg
+                logger.info("影片详情拉取完成：共 %d 部，失败 %d 部，海报仍缺 %d 张",
+                            self.state["done"], self.state["failed"], poster_missing)
 
 
 movie_detail_manager = MovieDetailManager()
