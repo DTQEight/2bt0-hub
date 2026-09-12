@@ -174,9 +174,11 @@ async def movie_detail(idcode: str) -> dict:
 # ---- 影片详情批量拉取 ----
 
 @app.post("/api/movies/start")
-async def movies_start() -> dict:
+async def movies_start(body: dict) -> dict:
+    """启动影片详情拉取。body: {section?: 1|2}，不传则拉全部板块的待拉取影片"""
     try:
-        movie_detail_manager.start()
+        section = int(body.get("section") or 0)
+        movie_detail_manager.start(section or None)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

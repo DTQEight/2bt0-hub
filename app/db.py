@@ -342,13 +342,20 @@ def upsert_movies(rows: list[dict]) -> int:
     return len(values)
 
 
-def pending_movie_ids() -> list[str]:
-    """种子里出现过、但 movies 表还没有详情的影片 id（供批量拉取详情）。"""
+def pending_movie_ids(category: str = "") -> list[str]:
+    """种子里出现过、但 movies 表还没有详情的影片 id（供批量拉取详情）。
+
+    category 非空时只取该分类（电影/电视剧）的影片，用于按板块分开拉详情。
+    """
+    sql = ("SELECT DISTINCT m.movie_id FROM magnets m"
+           " LEFT JOIN movies v ON v.idcode = m.movie_id"
+           " WHERE m.movie_id != '' AND v.idcode IS NULL")
+    params: list = []
+    if category:
+        sql += " AND m.category = ?"
+        params.append(category)
     with _db() as conn:
-        rows = conn.execute(
-            """SELECT DISTINCT m.movie_id FROM magnets m
-               LEFT JOIN movies v ON v.idcode = m.movie_id
-               WHERE m.movie_id != '' AND v.idcode IS NULL""").fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [r[0] for r in rows]
 
 
@@ -359,23 +366,43 @@ def get_movie(idcode: str):
     return dict(row) if row else None
 
 
-_movie_stats_cache: dict = {"t": 0.0, "data": None}
+_movie_stats_cache: dict = {}  # category(或 "" 表示全部) → (monotonic, data)
 
 
-def movie_stats() -> dict:
-    """影片维度统计：已入库影片数、种子里涉及的去重影片数（15s 缓存）"""
+def movie_stats(category: str = "") -> dict:
+    """影片维度统计：种子里涉及的去重影片数、已入库详情数、待拉取数（15s 缓存）。
+
+    category 非空时只统计该分类（电影/电视剧），供板块卡片分别显示详情进度。
+    """
     now = time.monotonic()
-    cached = _movie_stats_cache["data"]
-    if cached is not None and now - _movie_stats_cache["t"] < _STATS_TTL:
-        return cached
+    hit = _movie_stats_cache.get(category)
+    if hit is not None and now - hit[0] < _STATS_TTL:
+        return hit[1]
+    if category:
+        wanted_sql = ("SELECT COUNT(DISTINCT movie_id) FROM magnets"
+                      " WHERE movie_id > '' AND category = ?")
+        pending_sql = ("SELECT COUNT(DISTINCT m.movie_id) FROM magnets m"
+                       " LEFT JOIN movies v ON v.idcode = m.movie_id"
+                       " WHERE m.movie_id > '' AND m.category = ? AND v.idcode IS NULL")
+        params: list = [category]
+    else:
+        wanted_sql = "SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE movie_id > ''"
+        pending_sql = ("SELECT COUNT(DISTINCT m.movie_id) FROM magnets m"
+                       " LEFT JOIN movies v ON v.idcode = m.movie_id"
+                       " WHERE m.movie_id > '' AND v.idcode IS NULL")
+        params = []
     with _db() as conn:
-        fetched = conn.execute("SELECT COUNT(*) FROM movies").fetchone()[0]
-        wanted = conn.execute(
-            "SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE movie_id > ''"
-        ).fetchone()[0]
-    result = {"fetched": fetched, "wanted": wanted}
-    _movie_stats_cache.update(t=now, data=result)
+        wanted = conn.execute(wanted_sql, params).fetchone()[0]
+        pending = conn.execute(pending_sql, params).fetchone()[0]
+    # 待拉取的必然也在 wanted 里，相减即已入库，省一次全表 COUNT
+    result = {"fetched": wanted - pending, "wanted": wanted, "pending": pending}
+    _movie_stats_cache[category] = (now, result)
     return result
+
+
+def invalidate_movie_stats() -> None:
+    """清空影片统计缓存（详情批量入库后调用，避免页面继续显示旧数字）"""
+    _movie_stats_cache.clear()
 
 
 # 海报墙排序：值 → ORDER BY 表达式。last/versions 取自分组结果，可以先分页再

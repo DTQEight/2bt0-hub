@@ -14,8 +14,9 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-from db import movie_stats, pending_movie_ids, upsert_movies
-from sources.bt0 import fetch_video_detail
+from db import (invalidate_movie_stats, movie_stats, pending_movie_ids,
+                upsert_movies)
+from sources.bt0 import SECTIONS, fetch_video_detail
 
 logger = logging.getLogger("resource-hub.movies")
 
@@ -37,6 +38,7 @@ class MovieDetailManager:
         self._samples: deque = deque(maxlen=400)  # (monotonic, done) 速度采样
         self.state = {
             "running": False,
+            "section": 0,     # 本次拉取的板块（1=电影 2=电视剧），0=全部
             "done": 0,        # 本次已处理（含失败）
             "total": 0,       # 本次待处理总数
             "failed": 0,
@@ -47,21 +49,26 @@ class MovieDetailManager:
 
     # ---- 对外接口 ----
 
-    def start(self) -> None:
+    def start(self, section: int | None = None) -> None:
+        """启动拉取。section 为 1/2 时只拉该板块的影片，None 时拉全部板块。"""
         if self.state["running"]:
             raise RuntimeError("影片详情拉取已在进行中，请先停止")
-        pending = pending_movie_ids()
+        if section and section not in SECTIONS:
+            raise ValueError(f"无效板块 {section}，仅支持: {SECTIONS}")
+        category = SECTIONS.get(section, "") if section else ""
+        pending = pending_movie_ids(category)
         if not pending:
-            if movie_stats()["wanted"] == 0:
-                raise ValueError("库里还没有影片 id，请先跑一次全量同步")
-            raise ValueError("影片详情都已入库，无需拉取")
+            if movie_stats(category)["wanted"] == 0:
+                raise ValueError(f"库里还没有{category or '影片'} id，请先跑一次全量同步")
+            raise ValueError(f"{category or '影片'}详情都已入库，无需拉取")
         self._stop.clear()
         self._samples.clear()
-        self.state.update(running=True, done=0, total=len(pending), failed=0,
-                          message="", speed=0.0, eta_seconds=None)
+        self.state.update(running=True, section=section or 0, done=0, total=len(pending),
+                          failed=0, message="", speed=0.0, eta_seconds=None)
         self._thread = threading.Thread(target=self._run, args=(pending,), daemon=True)
         self._thread.start()
-        logger.info("影片详情拉取启动：待拉取 %d 部，并发 %d", len(pending), WORKERS)
+        logger.info("影片详情拉取启动：%s待拉取 %d 部，并发 %d",
+                    f"{category} " if category else "", len(pending), WORKERS)
 
     def stop(self) -> None:
         if self.state["running"]:
@@ -72,6 +79,9 @@ class MovieDetailManager:
     def status(self) -> dict:
         s = dict(self.state)
         s.update(movie_stats())
+        s["section_label"] = SECTIONS.get(s["section"], "")
+        # 各板块的详情进度，供电影/电视剧卡片各自显示
+        s["sections"] = {str(sec): movie_stats(cat) for sec, cat in SECTIONS.items()}
         if s["running"] and len(self._samples) >= 2:
             (t0, d0), (t1, d1) = self._samples[0], self._samples[-1]
             dt = t1 - t0
@@ -152,6 +162,7 @@ class MovieDetailManager:
                     upsert_movies(batch)
                 except Exception:
                     logger.exception("影片详情收尾入库失败")
+            invalidate_movie_stats()  # 让页面立刻看到最新的已入库/待拉取数字
             self.state["running"] = False
             if self._stop.is_set():
                 self.state["message"] = (self.state["message"]

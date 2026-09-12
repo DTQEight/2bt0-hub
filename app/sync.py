@@ -113,8 +113,8 @@ class SyncManager:
         - "full"   全量（有断点则自动继续）
         - "update" 增量更新（要求该板块已完成全量同步）
 
-        auto_details：增量结束后是否自动拉取新增影片详情。定时任务自己会在
-        两个板块都跑完后统一拉取，所以传 False 避免重复触发。
+        auto_details：同步结束后是否自动跟进本板块的影片详情。定时任务与手动
+        同步都走这条路径；传 False 可关掉（例如外层已自行安排拉详情）。
         """
         if self.state["running"]:
             raise RuntimeError("同步已在进行中，请先停止")
@@ -299,22 +299,22 @@ class SyncManager:
                     ("…" if len(still_failed) > 8 else "")
                 self.state["message"] = ((self.state["message"] or "同步结束")
                                          + f"；{len(still_failed)} 页补抓后仍失败（{preview}）")
-            # 增量更新结束后自动跟进拉取新影片详情（海报/年份/评分，供海报墙显示）
-            if mode == "update" and self._auto_details and not self._stop.is_set():
+            # 同步结束后自动跟进本板块的影片详情（海报/年份/评分，供海报墙显示）
+            # 详情是独立后台任务，这里只负责启动、不等它跑完（顶栏会接着显示详情进度）
+            if self._auto_details and not self._stop.is_set():
                 self._fetch_new_movie_details()
 
-    @staticmethod
-    def _fetch_new_movie_details() -> None:
-        """增量结束后自动拉取新增影片的详情。
+    def _fetch_new_movie_details(self) -> None:
+        """同步结束后自动拉取本板块的新增影片详情。
 
         只处理待拉取队列（种子里出现过、movies 表还没有的影片），
         老片不会重复请求；失败只记日志，不影响同步结果。
         """
         if movie_detail_manager.state["running"]:
-            logger.info("影片详情：已有任务在进行，跳过自动拉取")
+            logger.info("影片详情：已有任务在进行，跳过自动拉取（下次同步会继续）")
             return
         try:
-            movie_detail_manager.start()
+            movie_detail_manager.start(self.state["section"])
         except (ValueError, RuntimeError) as exc:
             logger.info("影片详情：无需拉取（%s）", exc)
 

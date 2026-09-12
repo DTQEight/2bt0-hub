@@ -389,60 +389,145 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .pc-meta { margin-top: 3px; font-size: 12px; color: var(--muted); }
 
-/* 影片信息卡（看某片版本时置顶显示） */
+/* 影片信息卡（看某片版本时置顶显示，布局参考主站 2bt0.com 详情页） */
 .movie-head {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius);
-  background: var(--panel);
-  padding: 14px 16px;
-  margin-bottom: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+  padding: 24px;
+  margin-bottom: 16px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .06);
 }
 
-.mh-top {
+.mh-poster-wrap { flex-shrink: 0; }
+
+.mh-poster {
+  display: block;
+  width: 250px;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.mh-noposter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.mh-info { flex: 1; min-width: 0; }
+
+.mh-headline {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
-.mh-top > div { min-width: 0; flex: 1; }
+.mh-title {
+  font-size: 28.8px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding-bottom: 8px;
+  word-break: break-word;
+}
 
-.mh-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.mh-years {
+  margin-left: 6px;
+  font-size: .72em;
+  font-weight: 500;
+  color: rgba(255, 255, 255, .68);
+}
 
-.mh-sub { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-
-.mh-line {
-  font-size: 13px;
-  color: var(--muted);
-  margin-top: 5px;
+.mh-otitle {
+  font-size: 15.2px;
   line-height: 1.6;
+  color: rgba(255, 255, 255, .68);
+  margin-bottom: 16px;
+  word-break: break-word;
 }
 
-.mh-line b { color: var(--text); font-weight: 600; margin-right: 6px; }
-
-.mh-score { color: var(--green); }
-
-/* 评分外链（豆瓣/IMDB）与海报 */
-.mh-link { color: var(--green); text-decoration: none; }
-.mh-link:hover { text-decoration: underline; }
-
-.mh-poster {
-  width: 96px;
-  flex-shrink: 0;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  object-fit: cover;
-  align-self: flex-start;
+/* 元数据：标签独立成行、值在下（同主站 .meta strong） */
+.mh-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px 28px;
+  margin: 16px 0;
 }
 
-.mh-abstract {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
+.mh-field strong {
+  display: block;
+  font-size: 12.6px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, .5);
+  margin-bottom: 2px;
+}
+
+.mh-field span {
   font-size: 13px;
-  color: var(--muted);
-  line-height: 1.75;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, .68);
+  word-break: break-word;
+}
+
+/* 评分胶囊：豆瓣绿「豆」字 logo / IMDb 金底黑字标签，均带外链 */
+.mh-ratings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.mh-rating {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .04);
+  color: var(--text);
+  text-decoration: none;
+  transition: background .15s;
+}
+
+.mh-rating:hover { background: rgba(255, 255, 255, .1); }
+
+.mh-logo { font-weight: 700; }
+.mh-logo-doub { font-size: 17.6px; color: rgb(0, 199, 34); }
+
+.mh-logo-imdb {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgb(219, 165, 6);
+  color: #000;
+  font-size: 14.4px;
+}
+
+.mh-rating-score { font-size: 16px; font-weight: 600; }
+.mh-count { font-size: 12.8px; color: rgba(255, 255, 255, .68); }
+
+.mh-summary { margin-top: 16px; }
+
+.mh-summary h3 {
+  font-size: 17.6px;
+  font-weight: 600;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mh-summary p {
+  font-size: 14.4px;
+  line-height: 1.8;
+  color: rgba(255, 255, 255, .68);
+  white-space: pre-wrap;
+  word-break: break-word;
   /* 简介超长时限高滚动，避免把影片卡撑得过高 */
   max-height: 176px;
   overflow-y: auto;
@@ -450,14 +535,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   scrollbar-color: var(--border) transparent;
 }
 
-.mh-abstract::-webkit-scrollbar { width: 6px; }
-.mh-abstract::-webkit-scrollbar-thumb {
+.mh-summary p::-webkit-scrollbar { width: 6px; }
+.mh-summary p::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
 }
-.mh-abstract::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.mh-summary p::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
-.mh-top .act { flex-shrink: 0; }
+.mh-headline .act { flex-shrink: 0; }
 
 .hash {
   font-family: var(--mono);
@@ -609,6 +694,25 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-left: auto;
 }
 
+/* 板块卡片里的「影片详情」子块（详情并入各板块，各自显示进度与按钮） */
+.sync-detail {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.sync-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.sync-detail .sync-rows { margin-top: 0; }
+
 .stats-hint {
   margin-top: 14px;
   padding-top: 12px;
@@ -709,6 +813,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 900px) {
   .topbar { flex-wrap: wrap; }
   .topbar .searchbar { max-width: none; }
+}
+
+@media (max-width: 720px) {
+  .movie-head { flex-direction: column; gap: 16px; padding: 16px; }
+  .mh-poster { width: 150px; }
+  .mh-title { font-size: 21px; }
+  .mh-meta { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {

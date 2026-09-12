@@ -320,10 +320,16 @@ async function renderMovieHead() {
     return;
   }
   const id = state.movieId;
-  head.innerHTML = `<div class="movie-head"><div class="mh-top"><div>
-      <div class="mh-title">${escapeHtml(state.movieTitle || `影片 ${id}`)}</div>
-      <div class="mh-line">正在加载影片信息…</div>
-    </div><button type="button" class="act" data-back="1">← 返回片名列表</button></div></div>`;
+  head.innerHTML = `<div class="movie-head">
+      <div class="mh-poster-wrap"><div class="mh-poster mh-noposter">加载中…</div></div>
+      <div class="mh-info">
+        <div class="mh-headline">
+          <div class="mh-title">${escapeHtml(state.movieTitle || `影片 ${id}`)}</div>
+          <button type="button" class="act" data-back="1">← 返回片名列表</button>
+        </div>
+        <div class="mh-otitle">正在加载影片信息…</div>
+      </div>
+    </div>`;
   head.querySelector("[data-back]").addEventListener("click", backToGroups);
 
   let movie = null;
@@ -344,41 +350,66 @@ function fmtVotes(v) {
   return n >= 10000 ? `${(n / 10000).toFixed(1)}万人评价` : `${n}人评价`;
 }
 
+// 影片信息卡：布局参考主站 2bt0.com 详情页（海报 + 标题 + 元数据 + 评分胶囊 + 剧情简介）
 function movieHeadHtml(m) {
-  const line = [m.years, m.category, m.area, m.language].filter(Boolean).join(" · ");
-  // 评分段：豆瓣/IMDB 均带外链（站点 idcode 即豆瓣 subject id）
-  const segs = [];
-  if (m.doub_score && m.doub_score !== "0") {
+  const title = m.title || state.movieTitle || "（无标题）";
+  const years = (m.years || "").trim();
+  const otitle = m.otitle
+    ? `<div class="mh-otitle">${escapeHtml(m.otitle)}${m.alias ? `　/　又名：${escapeHtml(m.alias)}` : ""}</div>`
+    : (m.alias ? `<div class="mh-otitle">又名：${escapeHtml(m.alias)}</div>` : "");
+
+  // 元数据：标签独立成行、值在下，与主站 .meta 一致（"0"/"@" 是站点占位符，不展示）
+  const meta = [
+    ["导演", m.director],
+    ["主演", m.performer],
+    ["类型", m.category],
+    ["制片国家/地区", m.area],
+    ["语言", m.language],
+    ["上映日期", m.years],
+    ["片长", m.long_time],
+    ["集数", m.episodes],
+  ]
+    .filter(([, v]) => v && !["0", "@"].includes(v))
+    .map(([k, v]) => `<div class="mh-field"><strong>${k}</strong><span>${escapeHtml(v)}</span></div>`)
+    .join("");
+
+  // 评分胶囊：豆瓣（绿「豆」字 logo）/ IMDb（金底黑字小标签），均带外链
+  const ratings = [];
+  if (m.doub_score && !["0", "@"].includes(m.doub_score)) {
     const votes = fmtVotes(m.doub_votes);
-    segs.push(`<a class="mh-link" href="https://movie.douban.com/subject/${encodeURIComponent(m.idcode)}/" target="_blank" rel="noopener noreferrer">豆瓣 ${escapeHtml(m.doub_score)}${votes ? `（${votes}）` : ""} ↗</a>`);
+    ratings.push(`<a class="mh-rating" href="https://movie.douban.com/subject/${encodeURIComponent(m.idcode)}/" target="_blank" rel="noopener noreferrer" title="在豆瓣查看">
+      <span class="mh-logo mh-logo-doub">豆</span><span class="mh-rating-score">${escapeHtml(m.doub_score)}</span>${votes ? `<span class="mh-count">${votes}</span>` : ""}</a>`);
   }
   if (m.imdb_score && m.imdb_score !== "0" && m.imdb_id) {
     const votes = fmtVotes(m.imdb_votes);
-    segs.push(`<a class="mh-link" href="https://www.imdb.com/title/${encodeURIComponent(m.imdb_id)}/" target="_blank" rel="noopener noreferrer">IMDB ${escapeHtml(m.imdb_score)}${votes ? `（${votes}）` : ""} ↗</a>`);
+    ratings.push(`<a class="mh-rating" href="https://www.imdb.com/title/${encodeURIComponent(m.imdb_id)}/" target="_blank" rel="noopener noreferrer" title="在 IMDb 查看">
+      <span class="mh-logo mh-logo-imdb">IMDb</span><span class="mh-rating-score">${escapeHtml(m.imdb_score)}</span>${votes ? `<span class="mh-count">${votes}</span>` : ""}</a>`);
   } else if (m.imdb_id) {
-    segs.push(`<a class="mh-link" href="https://www.imdb.com/title/${encodeURIComponent(m.imdb_id)}/" target="_blank" rel="noopener noreferrer">${escapeHtml(m.imdb_id)} ↗</a>`);
+    ratings.push(`<a class="mh-rating" href="https://www.imdb.com/title/${encodeURIComponent(m.imdb_id)}/" target="_blank" rel="noopener noreferrer" title="在 IMDb 查看">
+      <span class="mh-logo mh-logo-imdb">IMDb</span><span class="mh-count">${escapeHtml(m.imdb_id)}</span></a>`);
   }
-  const body = [
-    m.otitle ? `<div class="mh-sub">${escapeHtml(m.otitle)}${m.alias ? `　别名：${escapeHtml(m.alias)}` : ""}</div>` : "",
-    line ? `<div class="mh-line">${escapeHtml(line)}</div>` : "",
-    segs.length ? `<div class="mh-line mh-score">${segs.join(" · ")}</div>` : "",
-    m.director ? `<div class="mh-line"><b>导演</b>${escapeHtml(m.director)}</div>` : "",
-    m.performer ? `<div class="mh-line"><b>主演</b>${escapeHtml(m.performer)}</div>` : "",
-    m.abstract ? `<div class="mh-abstract">${escapeHtml(m.abstract)}</div>` : "",
-  ].filter(Boolean).join("");
-  // 海报（站点图床外链，懒加载；无海报时不占位）
+
+  // 海报（站点图床外链，懒加载；无海报时给占位块，保持与主站相同的版心）
   const poster = m.image && /^https?:\/\//i.test(m.image)
-    ? `<img class="mh-poster" src="${escapeHtml(m.image)}" loading="lazy" alt="海报" referrerpolicy="no-referrer">`
+    ? `<img class="mh-poster" src="${escapeHtml(m.image)}" loading="lazy" alt="${escapeHtml(title)} 海报" referrerpolicy="no-referrer">`
+    : `<div class="mh-poster mh-noposter">暂无海报</div>`;
+
+  const summary = m.abstract
+    ? `<div class="mh-summary"><h3>剧情简介</h3><p>${escapeHtml(m.abstract)}</p></div>`
     : "";
+
   return `
     <div class="movie-head">
-      <div class="mh-top">
-        ${poster}
-        <div>
-          <div class="mh-title">${escapeHtml(m.title || state.movieTitle || "（无标题）")}</div>
-          ${body}
+      <div class="mh-poster-wrap">${poster}</div>
+      <div class="mh-info">
+        <div class="mh-headline">
+          <div class="mh-title">${escapeHtml(title)}${years ? `<span class="mh-years">(${escapeHtml(years)})</span>` : ""}</div>
+          <button type="button" class="act" data-back="1">← 返回片名列表</button>
         </div>
-        <button type="button" class="act" data-back="1">← 返回片名列表</button>
+        ${otitle}
+        ${meta ? `<div class="mh-meta">${meta}</div>` : ""}
+        ${ratings.length ? `<div class="mh-ratings">${ratings.join("")}</div>` : ""}
+        ${summary}
       </div>
     </div>`;
 }
@@ -386,12 +417,13 @@ function movieHeadHtml(m) {
 function movieHeadEmptyHtml() {
   return `
     <div class="movie-head">
-      <div class="mh-top">
-        <div>
+      <div class="mh-poster-wrap"><div class="mh-poster mh-noposter">暂无海报</div></div>
+      <div class="mh-info">
+        <div class="mh-headline">
           <div class="mh-title">${escapeHtml(state.movieTitle || `影片 ${state.movieId}`)}</div>
-          <div class="mh-line">详情尚未拉取 —— 可在「同步」页启动「拉取影片详情」，之后即会显示原名 / 年份 / 分类 / 评分</div>
+          <button type="button" class="act" data-back="1">← 返回片名列表</button>
         </div>
-        <button type="button" class="act" data-back="1">← 返回片名列表</button>
+        <div class="mh-otitle">详情尚未拉取 —— 可在「同步」页启动「拉取影片详情」，之后即会显示原名／年份／分类／演员／评分与海报</div>
       </div>
     </div>`;
 }
@@ -495,12 +527,13 @@ function fmtEtaShort(sec) {
   return m ? `${h}小时${m}分` : `${h}小时`;
 }
 
-// 单个板块卡片
-function syncCardHtml(sc, s) {
+// 单个板块卡片（含该板块自己的影片详情进度）
+function syncCardHtml(sc, s, m) {
   const label = SECTIONS[sc];
   const prog = s.progress && s.progress[String(sc)];
   const isDone = (s.done || []).includes(sc);
   const isRunning = s.running && s.section === sc;
+  const detailRunning = !!(m && m.running && m.section === sc);
   const catCount = (s.by_category || {})[label] || 0;
 
   // 状态徽标
@@ -556,7 +589,7 @@ function syncCardHtml(sc, s) {
   const stopBtn = isRunning ? `<button type="button" class="stop" data-stop="1">停止</button>` : "";
 
   return `
-    <div class="sync-card ${isRunning ? "running" : ""}">
+    <div class="sync-card ${isRunning || detailRunning ? "running" : ""}">
       <div class="sync-card-head">
         <h3>${label}</h3>
         <span class="sbadge ${badgeCls}">${badge}</span>
@@ -568,6 +601,58 @@ function syncCardHtml(sc, s) {
         <button type="button" data-update="${sc}" ${updateDisabled}>增量更新</button>
         ${stopBtn}
       </div>
+      ${detailBlockHtml(sc, m)}
+    </div>`;
+}
+
+// 板块卡片里的「影片详情」子块：详情按板块分开统计和拉取
+function detailBlockHtml(sc, m) {
+  if (!m) return "";
+  const st = (m.sections || {})[String(sc)] || {};
+  const pending = st.pending || 0;
+  const fetched = st.fetched || 0;
+  const wanted = st.wanted || 0;
+  const isRunning = !!m.running && m.section === sc;
+
+  let badge, badgeCls;
+  if (isRunning) { badge = "拉取中"; badgeCls = "run"; }
+  else if (pending) { badge = `待拉取 ${fmtNum(pending)} 部`; badgeCls = "pause"; }
+  else if (wanted) { badge = "已完成"; badgeCls = "done"; }
+  else { badge = "无数据"; badgeCls = "none"; }
+
+  const pct = isRunning && m.total > 0
+    ? Math.min(100, (m.done / m.total) * 100).toFixed(1) : null;
+  const progressHtml = isRunning
+    ? `<div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
+       <div class="progress-num">${pct}% · 已拉取 ${fmtNum(m.done)} / ${fmtNum(m.total)} 部</div>`
+    : "";
+  const runRows = isRunning
+    ? `<div class="sync-row"><span>速度</span><span>${m.speed > 0 ? `${fmtNum(m.speed)} 部/分钟` : "采样中…"}</span></div>
+       <div class="sync-row"><span>预计剩余</span><span class="eta">${fmtEta(m.eta_seconds)}</span></div>`
+    : "";
+  // 上次拉取结果只在本板块跑过时展示，避免两个卡片显示同一句话
+  const lastRow = m.message && m.section === sc
+    ? `<div class="sync-row"><span>最近一次</span><span>${escapeHtml(m.message)}</span></div>` : "";
+
+  const btn = isRunning
+    ? `<button type="button" class="stop" data-detail-stop="1">停止拉取详情</button>`
+    : `<button type="button" data-detail="${sc}" ${pending ? "" : "disabled"}>${
+        pending ? `拉取${SECTIONS[sc]}详情（${fmtNum(pending)} 部）` : "详情已全部拉取"}</button>`;
+
+  return `
+    <div class="sync-detail">
+      <div class="sync-detail-head">
+        <span>影片详情</span>
+        <span class="sbadge ${badgeCls}">${badge}</span>
+      </div>
+      ${progressHtml}
+      <div class="sync-rows">
+        ${runRows}
+        <div class="sync-row"><span>详情已入库</span><span>${fmtNum(fetched)} / ${fmtNum(wanted)} 部</span></div>
+        ${lastRow}
+      </div>
+      <div class="sync-actions">${btn}</div>
+      <div class="stats-hint">片名 / 原名 / 别名 / 年份 / 分类 / 豆瓣与 IMDB 评分 / 地区 / 导演 / 主演 / 简介。站点无批量接口，按影片逐个拉取（约 0.3 秒/部，4 线程并发）；本板块同步跑完会自动跟进。</div>
     </div>`;
 }
 
@@ -617,48 +702,6 @@ function scheduleCardHtml(cfg) {
     </div>`;
 }
 
-// 影片详情批量拉取卡片
-function movieTaskCardHtml(m) {
-  if (!m) return "";
-  const running = !!m.running;
-  const pending = Math.max(0, (m.wanted || 0) - (m.fetched || 0));
-  let badge, badgeCls;
-  if (running) { badge = "拉取中"; badgeCls = "run"; }
-  else if (m.wanted && !pending) { badge = "已完成"; badgeCls = "done"; }
-  else if (pending) { badge = `待拉取 ${fmtNum(pending)} 部`; badgeCls = "pause"; }
-  else { badge = "无数据"; badgeCls = "none"; }
-
-  const pct = running && m.total > 0
-    ? Math.min(100, (m.done / m.total) * 100).toFixed(1) : null;
-  const progressHtml = running
-    ? `<div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
-       <div class="progress-num">${pct}% · 已拉取 ${fmtNum(m.done)} / ${fmtNum(m.total)} 部</div>`
-    : "";
-  const runRows = running
-    ? `<div class="sync-row"><span>速度</span><span>${m.speed > 0 ? `${fmtNum(m.speed)} 部/分钟` : "采样中…"}</span></div>
-       <div class="sync-row"><span>预计剩余</span><span class="eta">${fmtEta(m.eta_seconds)}</span></div>`
-    : "";
-
-  return `
-    <div class="sync-card ${running ? "running" : ""}">
-      <div class="sync-card-head"><h3>影片详情</h3><span class="sbadge ${badgeCls}">${badge}</span></div>
-      ${progressHtml}
-      <div class="sync-rows">
-        ${runRows}
-        <div class="sync-row"><span>已入库影片</span><span>${fmtNum(m.fetched)} 部</span></div>
-        <div class="sync-row"><span>种子里涉及</span><span>${fmtNum(m.wanted)} 部</span></div>
-        ${m.message ? `<div class="sync-row"><span>最近一次</span><span>${escapeHtml(m.message)}</span></div>` : ""}
-      </div>
-      <div class="sync-actions">
-        <button type="button" class="primary" data-movie-fetch="1" ${
-          running || !pending ? "disabled" : ""}>${
-          running ? "拉取中…" : pending ? `拉取影片详情（${fmtNum(pending)} 部）` : "全部已拉取"}</button>
-        ${running ? `<button type="button" class="stop" data-movie-stop="1">停止</button>` : ""}
-      </div>
-      <div class="stats-hint">片名 / 原名 / 别名 / 年份 / 分类 / 豆瓣与 IMDB 评分 / 地区 / 导演 / 主演 / 简介。站点无批量接口，按影片逐个拉取（实测约 0.3 秒/部，4 线程并发）。</div>
-    </div>`;
-}
-
 async function loadSchedule() {
   let cfg;
   try {
@@ -698,7 +741,7 @@ async function saveSchedule(patch) {
 
 function renderSyncPage(s, m) {
   el["sync-grid"].innerHTML =
-    syncCardHtml(1, s) + syncCardHtml(2, s) + statsCardHtml(s) + movieTaskCardHtml(m);
+    syncCardHtml(1, s, m) + syncCardHtml(2, s, m) + statsCardHtml(s);
   // 绑定按钮事件（innerHTML 重建后需重绑）
   for (const btn of el["sync-grid"].querySelectorAll("[data-full]")) {
     // 必须显式传 full：后端在未指定模式时，对"已全量完成"的板块会自动降级成增量更新
@@ -711,18 +754,24 @@ function renderSyncPage(s, m) {
     // 卡片上的停止只停种子同步；顶栏停止按钮才会连影片详情任务一起停
     btn.addEventListener("click", stopSectionSync);
   }
-  const fetchBtn = el["sync-grid"].querySelector("[data-movie-fetch]");
-  if (fetchBtn) fetchBtn.addEventListener("click", startMovieFetch);
-  const movieStopBtn = el["sync-grid"].querySelector("[data-movie-stop]");
-  if (movieStopBtn) movieStopBtn.addEventListener("click", stopMovieFetch);
+  for (const btn of el["sync-grid"].querySelectorAll("[data-detail]")) {
+    btn.addEventListener("click", () => startMovieFetch(Number(btn.dataset.detail)));
+  }
+  for (const btn of el["sync-grid"].querySelectorAll("[data-detail-stop]")) {
+    btn.addEventListener("click", stopMovieFetch);
+  }
 }
 
-async function startMovieFetch() {
+async function startMovieFetch(section) {
   try {
-    const res = await fetch("/api/movies/start", { method: "POST" });
+    const res = await fetch("/api/movies/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(section ? { section } : {}),
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-    showToast(`已开始拉取影片详情（共 ${fmtNum(data.total)} 部）`);
+    showToast(`已开始拉取${SECTIONS[section] || ""}影片详情（共 ${fmtNum(data.total)} 部）`);
   } catch (err) {
     showToast(`启动失败：${err.message}`);
   }
@@ -803,7 +852,7 @@ async function refreshSyncUI(notifyDone) {
     } else {
       const etaText = m.eta_seconds != null ? `·剩${fmtEtaShort(m.eta_seconds)}` : "";
       el["sync-badge-text"].textContent =
-        `影片详情 ${fmtCompact(m.done)}/${fmtCompact(m.total)}部${etaText}`;
+        `影片详情${m.section_label ? `·${m.section_label}` : ""} ${fmtCompact(m.done)}/${fmtCompact(m.total)}部${etaText}`;
     }
   } else {
     el["sync-badge"].hidden = true;
