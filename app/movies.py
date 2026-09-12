@@ -3,6 +3,9 @@
 站点没有批量查详情的接口，只能按影片 id 逐个请求（实测单次约 0.3 秒），
 所以用 4 线程并发、后台运行、可随时停止，进度实时上报。
 
+顺带把海报图从图床下载到 DATA_DIR/posters（见 posters.py），
+由 /posters/{文件名} 本地提供，不再依赖外部图床。
+
 前提：magnets 表已有 movie_id（全量同步时写入）；否则没有可拉取的影片。
 """
 
@@ -16,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from db import (invalidate_movie_stats, movie_stats, pending_movie_ids,
                 upsert_movies)
+from posters import ensure as download_poster
 from sources.bt0 import SECTIONS, fetch_video_detail
 
 logger = logging.getLogger("resource-hub.movies")
@@ -95,12 +99,19 @@ class MovieDetailManager:
 
     @staticmethod
     def _fetch_one(idcode: str) -> dict | None:
-        """抓一部影片详情；失败返回 None（只记告警，不中断整体）"""
+        """抓一部影片详情 + 顺手把海报存到本地；详情失败返回 None（只记告警，不中断整体）"""
         try:
-            return fetch_video_detail(idcode)
+            detail = fetch_video_detail(idcode)
         except Exception as exc:
             logger.warning("影片 %s 详情拉取失败: %s", idcode, exc)
             return None
+        # 海报本地化：失败不影响详情入库（留空路径，页面回落到图床原地址）
+        try:
+            detail["poster_path"] = download_poster(idcode, detail.get("image", ""))
+        except Exception:
+            logger.warning("影片 %s 海报本地化异常", idcode, exc_info=True)
+            detail["poster_path"] = ""
+        return detail
 
     def _run(self, pending: list[str]) -> None:
         err_streak = 0

@@ -4,6 +4,7 @@ const state = {
   tab: "movie", // movie | tv | local | sync | logs
   page: 1,
   q: "",
+  person: "", // 非空＝只看该演职人员（演员/导演/编剧）参与的影片，点详情卡里的名字设置
   // 电影 / 电视剧 Tab 就是本地库分板块的片名海报墙，只有「本地磁力库」看全部版本列表
   localCategory: "电影", // 本地库当前板块（local Tab 下可切 电影/电视剧/全部）
   localView: "groups", // groups=按片名海报墙 | items=全部版本列表
@@ -57,6 +58,30 @@ function showToast(message) {
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// 海报地址可用性判断：接口给的是本地缓存 /posters/xxx.webp，没缓存才是图床 http(s) 外链。
+// 其它值（空、异常协议）一律当没有海报，交给占位块。
+function isPosterUrl(u) {
+  return /^https?:\/\//i.test(u || "") || /^\/posters\/[\w.-]+$/i.test(u || "");
+}
+
+// 站点「上映日期」是一整串多地区原文（逗号分隔，括号里是地区或电影节，顺序不固定），
+// 例：2008-10-09(中国大陆),2008-06-27(美国) / 2006-12-09(日本),2007-02-02(美国)
+// 详情卡只显示一段：优先含「中国大陆」的那段（可能是"中国大陆点映/网络"），
+// 没有就显示首段并把标签改成「首映」，避免把别国首映标成中国内地上映。
+function releaseText(raw) {
+  // 只在「逗号后面跟着新日期」处切分：段内可能自带逗号（如 2025-07-11(美国,中国大陆)），
+  // 直接按逗号切会把这种段截断
+  const segs = String(raw || "").split(/[,，](?=\s*\d{4}[-年])/)
+    .map((s) => s.trim()).filter(Boolean);
+  if (!segs.length) return null;
+  const cn = segs.find((s) => s.includes("中国大陆"));
+  if (cn) {
+    // 括号里只有"中国大陆"时去掉，标签已说明；带"点映/网络/多地区"的保留，那是有用信息
+    return { label: "中国大陆上映", value: cn.replace(/[（(]中国大陆[)）]$/, "") };
+  }
+  return { label: "首映", value: segs[0] };
 }
 
 function copyText(text) {
@@ -149,7 +174,7 @@ const filterPending = {}; // category → 是否正在请求（避免重复发�
 
 function filtersActive() {
   const f = state.localFilters;
-  return !!(f.ftype || f.farea || f.fyears || f.fquality || f.ftag
+  return !!(state.person || f.ftype || f.farea || f.fyears || f.fquality || f.ftag
     || f.votesMin > 0 || f.scoreMin > 0 || f.scoreMax < 10 || f.imdbOnly);
 }
 
@@ -351,7 +376,14 @@ function renderFilterSummary() {
   if (f.votesMin) parts.push(`评分人数≥${fmtVotesMin(f.votesMin)}`);
   if (f.scoreMin || f.scoreMax < 10) parts.push(`评分${f.scoreMin}-${f.scoreMax}`);
   if (f.imdbOnly) parts.push("仅看 IMDb");
-  el["filter-active"].textContent = parts.length ? `已选：${parts.join(" · ")}` : "";
+  // 人名是点详情卡里的演员/导演/编剧点出来的，单独给个可点掉的胶囊；
+  // 其余条件仍走「清空筛选」一起清
+  const pill = state.person
+    ? `<button type="button" class="filter-pill" data-clear-person
+               title="取消只看此人">人物：${escapeHtml(state.person)} ✕</button>`
+    : "";
+  const rest = parts.length ? `已选：${escapeHtml(parts.join(" · "))}` : "";
+  el["filter-active"].innerHTML = pill + (pill && rest ? "　" : "") + rest;
   el["filter-reset"].hidden = !filtersActive();
 }
 
@@ -465,6 +497,7 @@ function buildCard(item) {
 async function loadGroups(token) {
   const params = new URLSearchParams({ page: state.page, sort: state.localSort });
   if (state.q) params.set("q", state.q);
+  if (state.person) params.set("person", state.person);
   if (state.localCategory) params.set("category", state.localCategory);
   const f = state.localFilters;
   for (const key of ["ftype", "farea", "fyears", "fquality", "ftag"]) {
@@ -496,8 +529,12 @@ async function loadGroups(token) {
 
 function renderGroups(data) {
   const groups = data.groups || [];
-  const prefix = state.q
-    ? `搜索“${state.q}”命中 ${fmtNum(data.total_groups)} 部 · `
+  // 状态行带上当前条件，一眼知道这批结果是怎么来的
+  const bits = [];
+  if (state.person) bits.push(`人物“${state.person}”`);
+  if (state.q) bits.push(`搜索“${state.q}”`);
+  const prefix = bits.length
+    ? `${bits.join(" ")}：${fmtNum(data.total_groups)} 部 · `
     : `共 ${fmtNum(data.total_groups)} 部影片 · `;
   el.status.textContent = `${prefix}第 ${data.page} / ${data.total_pages} 页`;
 
@@ -521,8 +558,8 @@ function buildGroupCard(g) {
   const title = g.title || g.movie_title || `影片 ${g.movie_id}`;
   // 站点用 0 / @ 表示"暂无评分"，不显示角标
   const score = g.doub_score && !["0", "@"].includes(g.doub_score) ? g.doub_score : "";
-  // 海报图床是外链，加载失败只是留空，不影响其它信息
-  const poster = g.image && /^https?:\/\//i.test(g.image)
+  // 海报：本地缓存优先（/posters/），其次是图床外链；加载失败只是留空，不影响其它信息
+  const poster = isPosterUrl(g.image)
     ? `<img class="pc-img" src="${escapeHtml(g.image)}" alt="${escapeHtml(title)}"
              loading="lazy" referrerpolicy="no-referrer">`
     : `<div class="pc-noimg">${escapeHtml(title)}</div>`;
@@ -599,6 +636,14 @@ function fmtVotes(v) {
   return n >= 10000 ? `${(n / 10000).toFixed(1)}万人评价` : `${n}人评价`;
 }
 
+// 演职人员名字渲染成可点的按钮：点了就看这个人参与的全部影片（走 movie_people 精确匹配）
+function peopleHtml(value) {
+  return String(value || "").split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+    .map((n) => `<button type="button" class="mh-person" data-person="${escapeHtml(n)}"
+                          title="查看 ${escapeHtml(n)} 的全部作品">${escapeHtml(n)}</button>`)
+    .join("、");
+}
+
 // 影片信息卡：布局参考主站 2bt0.com 详情页（海报 + 标题 + 元数据 + 评分胶囊 + 剧情简介）
 function movieHeadHtml(m) {
   const title = m.title || state.movieTitle || "（无标题）";
@@ -608,18 +653,24 @@ function movieHeadHtml(m) {
     : (m.alias ? `<div class="mh-otitle">又名：${escapeHtml(m.alias)}</div>` : "");
 
   // 元数据：标签独立成行、值在下，与主站 .meta 一致（"0"/"@" 是站点占位符，不展示）
+  // 上映日期用 release（只能取一段），影片没这条剧情数据时退回年份，与旧版一致
+  // 导演/主演/编剧的人名点得动，点了看这个人的全部作品
+  const rel = releaseText(m.release);
+  const people = { 导演: m.director, 主演: m.performer, 编剧: m.writer };
   const meta = [
     ["导演", m.director],
     ["主演", m.performer],
+    ["编剧", m.writer],
     ["类型", m.category],
     ["制片国家/地区", m.area],
     ["语言", m.language],
-    ["上映日期", m.years],
+    rel ? [rel.label, rel.value] : ["上映日期", m.years],
     ["片长", m.long_time],
     ["集数", m.episodes],
   ]
     .filter(([, v]) => v && !["0", "@"].includes(v))
-    .map(([k, v]) => `<div class="mh-field"><strong>${k}</strong><span>${escapeHtml(v)}</span></div>`)
+    .map(([k, v]) => `<div class="mh-field"><strong>${k}</strong><span>${
+      people[k] ? peopleHtml(v) : escapeHtml(v)}</span></div>`)
     .join("");
 
   // 评分胶囊：豆瓣（绿「豆」字 logo）/ IMDb（金底黑字小标签），均带外链
@@ -638,8 +689,8 @@ function movieHeadHtml(m) {
       <span class="mh-logo mh-logo-imdb">IMDb</span><span class="mh-count">${escapeHtml(m.imdb_id)}</span></a>`);
   }
 
-  // 海报（站点图床外链，懒加载；无海报时给占位块，保持与主站相同的版心）
-  const poster = m.image && /^https?:\/\//i.test(m.image)
+  // 海报（本地缓存优先，其次图床外链，懒加载；无海报时给占位块，保持与主站相同的版心）
+  const poster = isPosterUrl(m.image)
     ? `<img class="mh-poster" src="${escapeHtml(m.image)}" loading="lazy" alt="${escapeHtml(title)} 海报" referrerpolicy="no-referrer">`
     : `<div class="mh-poster mh-noposter">暂无海报</div>`;
 
@@ -1242,7 +1293,28 @@ document.addEventListener("click", (e) => {
 el["filter-reset"].addEventListener("click", () => {
   state.localFilters = { ftype: "", farea: "", fyears: "", fquality: "", ftag: "",
                          votesMin: 0, scoreMin: 0, scoreMax: 10, imdbOnly: false };
+  state.person = "";
   refreshFilters();
+});
+
+// 摘要里的「人物：xxx ✕」：只取消这条人名条件，其余筛选保留
+el["filter-active"].addEventListener("click", (e) => {
+  if (!e.target.closest("[data-clear-person]")) return;
+  state.person = "";
+  refreshFilters();
+});
+
+// 点详情卡里的演员/导演/编剧姓名 → 回到海报墙只看这个人的作品
+el["movie-head"].addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-person]");
+  if (!btn) return;
+  state.person = btn.dataset.person;
+  state.movieId = ""; // 退出该影片的版本列表，回到片名海报墙
+  state.movieTitle = "";
+  state.page = 1;
+  applyCatFilter(); // 详情卡视图里筛选条是隐藏的，回海报墙要恢复可见
+  renderFilterSummary();
+  load();
 });
 
 // 筛选条展开/收起：窄屏默认收起，桌面端也能手动收起那五排标签

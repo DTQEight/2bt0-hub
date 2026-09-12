@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -19,6 +20,8 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+
+logger = logging.getLogger("resource-hub.db")
 
 _LOCK = threading.Lock()  # 序列化写事务
 
@@ -88,8 +91,23 @@ CREATE TABLE IF NOT EXISTS movies (
     abstract TEXT DEFAULT '',
     tags TEXT DEFAULT '',
     definition TEXT DEFAULT '',
+    release TEXT DEFAULT '',
+    writer TEXT DEFAULT '',
+    site_updated_at TEXT DEFAULT '',
+    video_type TEXT DEFAULT '',
+    poster_path TEXT DEFAULT '',
     detail_ver INTEGER DEFAULT 0,
     fetched_at TEXT NOT NULL
+);
+-- 演职人员：把 movies 的 performer/director/writer 三条逗号串拆成独立记录。
+-- 整串存法只能做 LIKE 子串匹配（搜"白"会命中"白石晴香"），拆开后才能
+-- 「点某个演员看他的全部作品」并按人名精确筛选；ord 保留站点给的主创顺序。
+CREATE TABLE IF NOT EXISTS movie_people (
+    movie_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    ord INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (movie_id, role, name)
 );
 CREATE TABLE IF NOT EXISTS sync_state (
     key TEXT PRIMARY KEY,
@@ -112,6 +130,8 @@ CREATE INDEX IF NOT EXISTS idx_magnets_movie ON magnets(movie_id);
 -- (category, movie_id)：按片名分组浏览时通常带分类过滤，命中它可省掉 GROUP BY 的临时 B 树
 -- （82 万行实测：加索引前 5.6 秒，加后 0.35 秒）
 CREATE INDEX IF NOT EXISTS idx_magnets_cat_movie ON magnets(category, movie_id);
+-- 演职人员按人名筛选（「点演员看全部作品」）：movie_id 由主键前缀覆盖，无需再建
+CREATE INDEX IF NOT EXISTS idx_people_name ON movie_people(name);
 -- 索引用途说明：
 --   id               → 无分类过滤时分页"定位本页首行"（覆盖索引，只扫约 10MB；否则深页要全表扫约 300MB）
 --   category         → get_stats() 的 GROUP BY category，以及本地库按分类筛选后分页定位本页首行
@@ -137,7 +157,9 @@ def init_db() -> None:
                 if name not in cols:
                     conn.execute(f"ALTER TABLE magnets ADD COLUMN {name} TEXT DEFAULT ''")
             vcols = {r["name"] for r in conn.execute("PRAGMA table_info(movies)")}
-            for name in ("doub_votes", "imdb_votes", "image", "tags", "definition"):
+            for name in ("doub_votes", "imdb_votes", "image", "tags", "definition",
+                         "release", "writer", "site_updated_at", "video_type",
+                         "poster_path"):
                 if name not in vcols:
                     conn.execute(f"ALTER TABLE movies ADD COLUMN {name} TEXT DEFAULT ''")
             # detail_ver：详情字段版本。补 tags/definition 之前的旧记录为 0，
@@ -145,6 +167,14 @@ def init_db() -> None:
             if "detail_ver" not in vcols:
                 conn.execute("ALTER TABLE movies ADD COLUMN detail_ver INTEGER DEFAULT 0")
             conn.executescript(_INDEXES)
+            # 演职人员表首次出现时，用 movies 里现成的三条字符串回填一次
+            # （数据都在库里，不必重新请求站点；只在空表时跑，一次性的）
+            if not conn.execute("SELECT COUNT(*) FROM movie_people").fetchone()[0]:
+                rows = [dict(r) for r in conn.execute(
+                    "SELECT idcode, performer, director, writer FROM movies").fetchall()]
+                if rows:
+                    filled = replace_people(conn, rows)
+                    logger.info("演职人员表首次建立，从影片表现有字段回填 %d 条", filled)
 
 
 _HASH_RE = re.compile(r"btih:([0-9a-fA-F]{40})")
@@ -323,13 +353,44 @@ def get_stats() -> dict:
 # ---- 影片（movies）：站点 getVideoDetail 接口的影片维度元数据 ----
 
 # 与 movies 表列一一对应（idcode 是主键，其余为详情字段）
+# 站点字段名 → 列名：edit=编剧、updated_at=站点侧更新时间、type=板块标记（1电影/2电视剧）、
+# poster_path 由 posters.ensure() 下载后写入（不来自接口）
 _MOVIE_FIELDS = ("idcode", "title", "otitle", "alias", "years", "category", "area",
                  "language", "episodes", "long_time", "doub_score", "doub_votes",
                  "imdb_id", "imdb_score", "imdb_votes", "image",
-                 "director", "performer", "abstract", "tags", "definition")
+                 "director", "performer", "abstract", "tags", "definition",
+                 "release", "writer", "site_updated_at", "video_type", "poster_path")
 
 # 详情数据版本：加了 tags/definition 之后递增，库内低于此值的记录会重新拉取
-DETAIL_VER = 1
+# 2 = 增加 release/writer/site_updated_at/video_type，并补本地海报
+DETAIL_VER = 2
+
+
+# 演职人员：站点把主演/导演/编剧各给成一条逗号分隔的字符串（编剧字段逗号后还带
+# 空格），拆成独立记录后用 movie_people 精确筛选、点人名看全部作品
+_PEOPLE_COLS = (("performer", "演员"), ("director", "导演"), ("writer", "编剧"))
+
+
+def _split_people(value: str) -> list[str]:
+    return [n.strip() for n in re.split(r"[,，]", str(value or "")) if n.strip()]
+
+
+def replace_people(conn, rows: list[dict]) -> int:
+    """重建这几部影片的演职人员记录（先删后插，避免站点删掉某人后留下残影）"""
+    ids = [str(r.get("idcode") or "").strip() for r in rows]
+    ids = [i for i in ids if i]
+    if not ids:
+        return 0
+    conn.execute(f"DELETE FROM movie_people WHERE movie_id IN ({','.join('?' * len(ids))})",
+                 ids)
+    values = [(mid, role, i, name)
+              for r in rows if (mid := str(r.get("idcode") or "").strip())
+              for col, role in _PEOPLE_COLS
+              for i, name in enumerate(_split_people(r.get(col)))]
+    if values:
+        conn.executemany("INSERT OR REPLACE INTO movie_people"
+                         " (movie_id, role, ord, name) VALUES (?,?,?,?)", values)
+    return len(values)
 
 
 def upsert_movies(rows: list[dict]) -> int:
@@ -340,7 +401,12 @@ def upsert_movies(rows: list[dict]) -> int:
         return 0
     cols = ", ".join(_MOVIE_FIELDS) + ", fetched_at, detail_ver"
     ph = ",".join("?" * (len(_MOVIE_FIELDS) + 2))
-    updates = ", ".join(f"{f}=excluded.{f}" for f in _MOVIE_FIELDS[1:])
+    # poster_path 只有海报下载成功时才有值，空值不能覆盖已缓存的那份（否则重拉一次
+    # 就会把本地海报"弄丢"，页面又回落到图床）
+    updates = ", ".join(f"{f}=excluded.{f}"
+                        for f in _MOVIE_FIELDS[1:] if f != "poster_path")
+    updates += (", poster_path=CASE WHEN excluded.poster_path != ''"
+                " THEN excluded.poster_path ELSE movies.poster_path END")
     with _LOCK:
         with _db() as conn:
             conn.executemany(
@@ -350,6 +416,7 @@ def upsert_movies(rows: list[dict]) -> int:
                         detail_ver=excluded.detail_ver""",
                 values,
             )
+            replace_people(conn, rows)  # 主演/导演/编剧拆成独立记录
     return len(values)
 
 
@@ -506,11 +573,13 @@ def _filter_cond(key: str, value) -> tuple[str, list] | None:
 
 
 def query_groups(page: int = 1, keyword: str = "", category: str = "",
-                 page_size: int = 20, sort: str = "last", filters: dict | None = None):
+                 page_size: int = 20, sort: str = "last", filters: dict | None = None,
+                 person: str = ""):
     """按影片分组浏览本地库：每组＝一部影片及其版本数。
 
     sort：last=最新入库（默认）/ score=豆瓣评分 / votes=评分人数 / years=年份 /
           versions=版本数。
+    person：按演职人员姓名精确筛选（演员/导演/编剧任一角色），见 movie_people。
     filters：筛选条条件（ftype/farea/fyears/fquality/ftag/votes_min/score_min/
             score_max/imdb_only），值来自文件名前缀，除高级筛选项外都是标签文字。
     海报、年份、评分取自 movies 表，未拉取详情的影片这几个字段为空（前端占位）。
@@ -521,6 +590,10 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
     if category:
         conds.append("category = ?")
         params.append(category)
+    if person:
+        # 人名精确匹配（走 idx_people_name），不受 LIKE 子串干扰
+        conds.append("movie_id IN (SELECT movie_id FROM movie_people WHERE name = ?)")
+        params.append(person)
     # 影片级条件（类型/地区/年份/画质/标签/评分…）都落在 movies 表，用非相关
     # IN 子查询过滤，SQLite 只会求值一次并建临时索引，不影响分组扫描
     mconds, mparams = [], []
@@ -551,7 +624,7 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
                  f"       COUNT(*) AS versions, MAX(id) AS last_id"
                  f" FROM magnets WHERE {where} GROUP BY movie_id")
     fields = ("g.movie_id, COALESCE(NULLIF(m.title, ''), g.movie_title) AS title,"
-              " g.versions, m.image, m.years, m.doub_score")
+              " g.versions, m.image, m.poster_path, m.years, m.doub_score")
     with _db() as conn:
         total = conn.execute(
             f"SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE {where}",

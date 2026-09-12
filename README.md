@@ -12,8 +12,9 @@
 - **三种同步模式**：断点续抓、增量更新（秒级追新）、全量重抓
 - **三个列表 Tab 都读本地库**：电影 / 电视剧 Tab 是各自板块的片名海报墙（每页 24 部，可按最新入库/评分最高/评分人数/上映时间/版本数排序）；「本地磁力库」是全部板块的全部磁力版本列表，可切电影 / 电视剧 / 全部；搜索均匹配片名、原名、别名、演员、导演、种子名与 info_hash
 - **筛选条**：分类参考主站影片库（影视类型 / 制片地区 / 上映年份 / 资源画质 / 影视标签 五组标签 + 排序方式 + 高级筛选：评分人数、豆瓣评分区间、仅看 IMDb），站点那项「仅显示网盘资源」不做；可选项由本地库实际数据聚合，点了一定有结果
-- **影片详情卡**：点开某部影片后置顶展示，布局参考主站详情页（250×375 海报 + 片名年份 + 原名/别名 + 导演/主演/类型/地区/语言/片长 + 豆瓣与 IMDb 评分胶囊外链 + 剧情简介限高滚动）
-- **影片资料**：片名、原名、别名、年份、类型、地区、语言、片长、豆瓣/IMDB 评分、导演、主演、剧情简介
+- **影片详情卡**：点开某部影片后置顶展示，布局参考主站详情页（250×375 海报 + 片名年份 + 原名/别名 + 导演/编剧/主演/类型/地区/语言/上映日期/片长 + 豆瓣与 IMDb 评分胶囊外链 + 剧情简介限高滚动）；导演/编剧/主演的**姓名可点**，点了回到海报墙只看这个人的作品
+- **影片资料**：片名、原名、别名、年份、上映日期、类型、地区、语言、片长、豆瓣/IMDB 评分、导演、编剧、主演、剧情简介
+- **海报本地化**：拉影片详情时把图床海报下载到 `DATA_DIR/posters`，由 `/posters/{文件名}` 提供，图床限流或下线也不影响浏览；扩展名按图片真实字节判断（图床会把 WebP 当 `image/png` 返回）
 - **每日定时增量**：到点自动对电影、电视剧依次追新，每个板块跑完自动跟进该板块的新片详情（海报/评分），开关与时间可在网页修改
 - **自动备份**：每日增量跑完用 `VACUUM INTO` 生成紧凑快照，保留最近 7 份
 - **终端风格日志页**：5 秒自动刷新、自动滚底、ERROR/WARNING 着色
@@ -53,7 +54,8 @@ app/
   main.py           FastAPI 入口与全部 API 路由
   db.py             SQLite 数据层（建表、去重写入、查询、备份）
   sync.py           全量同步 / 增量更新 / 断点续抓
-  movies.py         影片详情批量拉取（4 线程后台任务）
+  movies.py         影片详情批量拉取（4 线程后台任务）+ 顺手本地化海报
+  posters.py        海报本地化（图床下载 → DATA_DIR/posters）
   scheduler.py      每日定时增量 + 数据库自动备份
   sources/
     base.py         数据源抽象（Item / PageResult / Source）
@@ -92,12 +94,17 @@ app/
 
 影片级元数据按 `idcode` 唯一。一部影片平均对应十余个种子版本，长文本（简介、主演）只存一份。
 
-`idcode`（即豆瓣 subject id，可拼 `movie.douban.com/subject/{idcode}/`）、`title`、`otitle`、`alias`、`years`、`category`（类型）、`area`、`language`、`episodes`、`long_time`、`doub_score`、`doub_votes`（评价人数）、`imdb_id`、`imdb_score`、`imdb_votes`、`image`（海报 URL）、`director`、`performer`、`abstract`、`tags`（影视标签，逗号分隔）、`definition`（画质，逗号分隔）、`detail_ver`（详情版本）、`fetched_at`
+`idcode`（即豆瓣 subject id，可拼 `movie.douban.com/subject/{idcode}/`）、`title`、`otitle`、`alias`、`years`、`category`（类型）、`area`、`language`、`episodes`、`long_time`、`doub_score`、`doub_votes`（评价人数）、`imdb_id`、`imdb_score`、`imdb_votes`、`image`（图床海报 URL）、`director`、`performer`、`abstract`、`tags`（影视标签，逗号分隔）、`definition`（画质，逗号分隔）、`release`（上映日期**原文**，多地区逗号分隔、顺序不固定，如 `2008-10-09(中国大陆),2008-06-27(美国)`，站点仅电影有；详情卡取含「中国大陆」那段显示、没有则取首段标「首映」）、`writer`（编剧，站点字段 `edit`）、`video_type`（站点板块标记 1=电影 2=电视剧）、`site_updated_at`（站点侧影片更新时间，区别于本库的 `fetched_at`）、`poster_path`（本地海报文件名）、`detail_ver`（详情版本）、`fetched_at`
 
-`tags` / `definition` 是筛选条用的两个字段（详情接口里就有，之前没存）。加进来时把 `detail_ver` 一并加上：版本低于当前的旧记录会计入「待拉取」，重拉一次补齐，否则老片永远筛不出标签和画质。
+`tags` / `definition` 是筛选条用的两个字段（详情接口里就有，之前没存）。加进来时把 `detail_ver` 一并加上：版本低于当前的旧记录会计入「待拉取」，重拉一次补齐，否则老片永远筛不出标签和画质。加 `release` / `writer` / `video_type` / `site_updated_at` 与海报本地化时再把版本升到 2，同样会整体重拉一遍。
+
+### 海报缓存
+
+`DATA_DIR/posters/{idcode}.{ext}`：拉影片详情时从图床下载一份，扩展名按图片真实字节判定（`.jpg` / `.webp` / `.png` / `.gif` / `.avif`，实测图床会把 WebP 当 `image/png` 返回）。接口返回的 `image` 命中本地缓存时是 `/posters/{文件名}`，未缓存或文件已被删则回落到图床原地址。约 9.4 万部影片全缓存下来 6~7GB，一般按需拉取即可。
 
 ### 其他表
 
+- `movie_people` — 演职人员（`movie_id` / `role` 演员·导演·编剧 / `ord` 站点主创顺序 / `name`）。从 `movies` 的三条逗号串拆出来，用于「点人名看他的全部作品」与按人名精确筛选（整串存法只能 LIKE 子串匹配，搜"白"会命中"白石晴香"）；建表后首次启动会用库里现有字段自动回填，之后随详情入库一起更新
 - `sync_state` — 同步进度（`bt0:1` = 电影已抓页码；`bt0:1:done` = 已完成全量）
 - `settings` — 网页可改的配置（定时任务开关与小时）
 
@@ -123,7 +130,7 @@ app/
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DATA_DIR` | `/data` | 数据库、日志、备份的存放目录 |
+| `DATA_DIR` | `/data` | 数据库、日志、备份、海报缓存的存放目录 |
 | `TZ` | 容器默认（UTC） | 时区，定时任务按此触发，务必设为 `Asia/Shanghai` |
 | `SYNC_HOUR` | `3` | 每日增量默认触发小时（0-23）；网页改过之后以数据库为准 |
 
@@ -133,9 +140,10 @@ app/
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
 | GET | `/api/items` | 抓取/浏览条目（`source`、`sc`、`q`、`page`、`category`、`movie_id`） |
-| GET | `/api/groups` | 本地库按片名分组（海报墙）：`q`、`category`、`sort`、`page`；筛选 `ftype`/`farea`/`fyears`/`fquality`/`ftag`/`votes_min`/`score_min`/`score_max`/`imdb_only` |
+| GET | `/api/groups` | 本地库按片名分组（海报墙）：`q`、`person`（人名精确筛选）、`category`、`sort`、`page`；筛选 `ftype`/`farea`/`fyears`/`fquality`/`ftag`/`votes_min`/`score_min`/`score_max`/`imdb_only` |
 | GET | `/api/filters` | 筛选条可选项（`category` 可选）：只返回本地库确实有数据的标签 |
 | GET | `/api/movie/{idcode}` | 影片详情 |
+| GET | `/posters/{文件名}` | 本地缓存的海报图（未缓存返回 404，前端回落图床） |
 | POST | `/api/sync/start` | 启动同步（`section`、`mode`、`start_page`、`workers`） |
 | GET | `/api/sync/status` | 同步状态（进度、速度、ETA） |
 | POST | `/api/sync/stop` | 停止同步 |

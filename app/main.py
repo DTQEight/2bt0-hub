@@ -7,6 +7,7 @@ import logging
 import logging.handlers
 import math
 import os
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -24,8 +25,9 @@ from sync import sync_manager
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+POSTER_DIR = DATA_DIR / "posters"  # 海报本地缓存（图床下载，见 posters.py）
 
-for sub in ("logs", "db", "tmp"):
+for sub in ("logs", "db", "tmp", "posters"):
     (DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -142,11 +144,43 @@ async def sync_stop() -> dict:
 # 海报墙每页 24 部：宽屏 8 列正好铺满 3 行
 GROUPS_PAGE_SIZE = 24
 
+# 本地海报文件名白名单（文件名由 posters.py 生成；不许出现路径分隔符，防目录穿越）
+_POSTER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}\.(?:jpg|jpeg|png|webp|gif|avif)$")
+
+# 显式给出 MIME：Python 的 mimetypes 依赖系统 mime 库，容器里认不出 webp/avif
+# 时会退回 text/plain，浏览器可能拒绝渲染
+_POSTER_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                 "webp": "image/webp", "gif": "image/gif", "avif": "image/avif"}
+
+
+def _local_image(rec: dict) -> dict:
+    """海报优先用本地缓存（/posters/xxx.webp），没缓存或文件已丢则回落到图床原地址"""
+    name = str(rec.pop("poster_path", "") or "")
+    if name and (POSTER_DIR / name).is_file():
+        rec["image"] = f"/posters/{name}"
+    return rec
+
+
+@app.get("/posters/{name}")
+async def poster(name: str) -> FileResponse:
+    """本地缓存的海报图（拉影片详情时从图床下载，见 posters.py）"""
+    if not _POSTER_RE.match(name):
+        raise HTTPException(status_code=404, detail="海报不存在")
+    path = POSTER_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="海报不存在")
+    # 海报内容不会变，让浏览器长期缓存，省掉重复下载
+    return FileResponse(path,
+                        media_type=_POSTER_TYPES.get(name.rsplit(".", 1)[-1], "image/jpeg"),
+                        headers={"Cache-Control": "public, max-age=2592000"})
+
 
 @app.get("/api/groups")
 async def groups(
     page: int = Query(1, ge=1),
     q: str = Query("", max_length=200),
+    person: str = Query("", max_length=100,
+                        description="按演职人员精确筛选（演员/导演/编剧任一角色）"),
     category: str = Query("", max_length=20, description="分类过滤：电影/电视剧，空为全部"),
     sort: str = Query("last", max_length=10,
                       description="排序：last=最新入库/score=豆瓣评分/votes=评分人数/"
@@ -175,12 +209,12 @@ async def groups(
     try:
         rows, total = await asyncio.to_thread(
             query_groups, page, q.strip(), category.strip(), GROUPS_PAGE_SIZE, sort,
-            filters)
+            filters, person.strip())
     except Exception as exc:
         logger.exception("分组查询失败")
         raise HTTPException(status_code=502, detail=f"分组查询失败: {exc}") from exc
     return {
-        "groups": [dict(r) for r in rows],
+        "groups": [_local_image(dict(r)) for r in rows],
         "page": page,
         "total_pages": max(1, math.ceil(total / GROUPS_PAGE_SIZE)),
         "total_groups": total,
@@ -197,7 +231,8 @@ async def filters(category: str = Query("", max_length=20,
 @app.get("/api/movie/{idcode}")
 async def movie_detail(idcode: str) -> dict:
     """影片详情（站点 getVideoDetail 的元数据）；未拉取过时 movie 为 null"""
-    return {"movie": await asyncio.to_thread(get_movie, idcode)}
+    movie = await asyncio.to_thread(get_movie, idcode)
+    return {"movie": _local_image(dict(movie)) if movie else None}
 
 
 # ---- 影片详情批量拉取 ----

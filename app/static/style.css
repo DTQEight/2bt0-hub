@@ -219,7 +219,21 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
 /* 筛选条折叠按钮：窄屏默认收起，桌面端也能手动收起这五排标签 */
 .filter-toggle { padding: 6px 14px; font-size: 13px; }
 
-.filter-active { font-size: 12.5px; color: var(--muted); }
+.filter-active { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 「人物：xxx ✕」胶囊：点详情卡里的姓名后出现，点它单独取消这条条件 */
+.filter-pill {
+  padding: 2px 9px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.filter-pill:hover { background: rgba(79, 143, 247, .14); }
 
 /* 排序：头部常驻下拉，不展开筛选条也能改（手机上尤其有用） */
 .sort-select { display: flex; align-items: center; gap: 8px; }
@@ -701,6 +715,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: rgba(255, 255, 255, .68);
   word-break: break-word;
 }
+
+/* 演职人员姓名：看起来像文字，点得动（点了看这个人的全部作品） */
+.mh-person {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(79, 143, 247, .55);
+}
+
+.mh-person:hover { color: var(--accent); }
 
 /* 评分胶囊：豆瓣绿「豆」字 logo / IMDb 金底黑字标签，均带外链 */
 .mh-ratings {

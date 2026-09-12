@@ -113,6 +113,8 @@ def fetch_list(section: int, page: int) -> list[Item]:
 # getVideoDetail 返回字段 → movies 表列名
 # tags / definition 是站点影片库筛选用的「影视标签」与「资源画质」（逗号分隔），
 # 详情页接口里就有，取下来存库，本地筛选条才能按这两项过滤
+# 站点 edit=编剧、updated_at=站点侧更新时间（区别于本库的 fetched_at）、
+# type=板块标记（1=电影 2=电视剧）
 _DETAIL_MAP = {
     "title": "title", "otitle": "otitle", "alias": "alias", "years": "years",
     "class": "category", "production_area": "area", "language": "language",
@@ -120,7 +122,8 @@ _DETAIL_MAP = {
     "doub_score_peo_num": "doub_votes", "IMDB_score_peo_num": "imdb_votes",
     "image": "image", "IMDB_number": "imdb_id", "IMDB_score": "imdb_score",
     "director": "director", "performer": "performer", "abstract": "abstract",
-    "tags": "tags", "definition": "definition",
+    "tags": "tags", "definition": "definition", "release": "release",
+    "edit": "writer", "updated_at": "site_updated_at", "type": "video_type",
 }
 
 
