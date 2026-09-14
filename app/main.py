@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from db import (filter_options, get_movie, get_sync_progress, init_db, query_groups,
                 upsert_items)
 from movies import movie_detail_manager
+from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
 from sources.bt0 import SECTIONS
@@ -74,6 +75,10 @@ def _auto_resume() -> None:
 # 容器启动时若存在未完成的同步断点，后台线程自动续抓（重建容器也不丢进度）
 if get_sync_progress("bt0"):
     threading.Thread(target=_auto_resume, name="auto-resume", daemon=True).start()
+
+# 海报分桶迁移：历史版本把 7 万+ 张海报全放 posters 根目录，改为哈希分桶
+# 子目录（每桶约一万张）。迁移在后台进行，期间 find/路由均有根目录兜底
+threading.Thread(target=migrate_to_shards, name="poster-migrate", daemon=True).start()
 
 start_scheduler()  # 每日定时增量更新（电影 + 电视剧）
 
@@ -173,20 +178,27 @@ _POSTER_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
 
 
 def _local_image(rec: dict) -> dict:
-    """海报优先用本地缓存（/posters/xxx.webp），没缓存或文件已丢则回落到图床原地址"""
+    """海报优先用本地缓存（/posters/xxx.webp），没缓存或文件已丢则回落到图床原地址。
+
+    海报已分桶存放在 posters/00~09 子目录，文件定位统一走
+    posters.resolve（桶目录优先、根目录兜底）。"""
     name = str(rec.pop("poster_path", "") or "")
-    if name and (POSTER_DIR / name).is_file():
+    if name and resolve_poster(name) is not None:
         rec["image"] = f"/posters/{name}"
     return rec
 
 
 @app.get("/posters/{name}")
 async def poster(name: str) -> FileResponse:
-    """本地缓存的海报图（拉影片详情时从图床下载，见 posters.py）"""
+    """本地缓存的海报图（拉影片详情时从图床下载，见 posters.py）。
+
+    文件实际存放在 posters/00~09 分桶子目录里，由 resolve() 按文件名
+    哈希还原路径；URL 格式 /posters/{idcode}.{ext} 保持历史不变。
+    """
     if not _POSTER_RE.match(name):
         raise HTTPException(status_code=404, detail="海报不存在")
-    path = POSTER_DIR / name
-    if not path.is_file():
+    path = resolve_poster(name)
+    if path is None:
         raise HTTPException(status_code=404, detail="海报不存在")
     # 海报内容不会变，让浏览器长期缓存，省掉重复下载
     return FileResponse(path,
