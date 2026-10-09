@@ -18,6 +18,7 @@
       <button type="button" data-tab="local">本地磁力库</button>
       <button type="button" data-tab="sync">同步</button>
       <button type="button" data-tab="logs">日志</button>
+      <button type="button" data-tab="cloud115">115转存</button>
     </nav>
     <form id="search-form" class="searchbar" role="search" hidden>
       <input id="q" type="search" autocomplete="off" />
@@ -84,6 +85,50 @@
         <button type="button" id="log-refresh" class="logs-refresh">立即刷新</button>
       </div>
       <pre id="log-box" class="log-box" aria-live="off"></pre>
+    </section>
+
+    <section id="cloud115-view" hidden>
+      <div class="cloud115-layout">
+        <div class="cloud115-left">
+          <div class="card config-card">
+            <h3>115 配置</h3>
+            <label class="field">
+              <span>Cookie</span>
+              <input id="c115-cookie" type="password" autocomplete="off" placeholder="粘贴 115 Cookie" />
+            </label>
+            <div class="row">
+              <button type="button" id="c115-save-cookie">保存 Cookie</button>
+              <button type="button" id="c115-verify">验证</button>
+              <span id="c115-cookie-status" class="muted"></span>
+            </div>
+            <label class="field">
+              <span>默认转存目录</span>
+              <div id="c115-save-path" class="muted">未选择</div>
+            </label>
+            <div class="row">
+              <button type="button" id="c115-pick-dir">选择目录</button>
+              <button type="button" id="c115-back-dir">↑ 上级</button>
+              <span id="c115-dir-breadcrumb" class="muted"></span>
+            </div>
+            <div id="c115-dir-list" class="dir-list"></div>
+          </div>
+        </div>
+        <div class="cloud115-right">
+          <div class="card stats-card">
+            <h3>转存统计</h3>
+            <div id="c115-stats" class="stats-grid">加载中…</div>
+          </div>
+          <div class="card history-card">
+            <h3>最近转存记录</h3>
+            <div id="c115-history" class="history-list">加载中…</div>
+          </div>
+          <div class="card tasks-card">
+            <h3>115 离线任务</h3>
+            <button type="button" id="c115-refresh-tasks">刷新</button>
+            <div id="c115-tasks" class="task-list">加载中…</div>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 

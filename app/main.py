@@ -17,13 +17,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from db import (filter_options, get_movie, get_sync_progress, init_db, query_groups,
-                quality_counts, upsert_items)
+                query_items, upsert_items)
 from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
 from sources.bt0 import SECTIONS
 from sync import sync_manager
+import cloud115
+import transfer_history
+from crypto_utils import encrypt
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
 BASE_DIR = Path(__file__).resolve().parent
@@ -341,6 +344,141 @@ async def logs(lines: int = Query(200, ge=1, le=1000)) -> dict:
         f.seek(max(0, size - 512 * 1024))
         text = f.read().decode("utf-8", errors="replace")
     return {"lines": text.splitlines()[-lines:]}
+
+
+# ---- 115 网盘转存 ----
+
+@app.get("/api/115/config")
+async def cloud115_config() -> dict:
+    """115 配置：Cookie 是否已配置（掩码展示）、默认保存目录"""
+    config = cloud115.load_config()
+    cookie = config.get("cookie", "")
+    masked = ""
+    if cookie:
+        # 加密后的密文也只取首尾各 4 位，不暴露明文也不暴露完整密文
+        masked = (cookie[:4] + "****" + cookie[-4:]) if len(cookie) > 16 else "****"
+    path_id, path_name = cloud115.get_default_save_path()
+    return {"has_cookie": bool(cookie), "cookie_masked": masked,
+            "save_path_id": path_id, "save_path_name": path_name}
+
+
+@app.post("/api/115/config")
+async def cloud115_set_config(body: dict) -> dict:
+    """保存 115 Cookie（AES 加密存储）"""
+    cookie = (body.get("cookie") or "").strip()
+    if not cookie:
+        raise HTTPException(status_code=400, detail="Cookie 不能为空")
+    cloud115.update_config(lambda c: c.__setitem__("cookie", encrypt(cookie)))
+    cloud115.invalidate_cookie_cache()
+    logger.info("115 Cookie 已更新")
+    return {"success": True, "message": "Cookie 保存成功"}
+
+
+@app.post("/api/115/verify")
+async def cloud115_verify() -> dict:
+    """验证当前 Cookie 是否有效"""
+    success, msg = await asyncio.to_thread(cloud115.verify_cookie)
+    return {"success": success, "message": msg}
+
+
+@app.get("/api/115/dirs")
+async def cloud115_dirs(cid: str = Query("0", max_length=30)) -> dict:
+    """列出 115 网盘某目录下的子目录（用于选择转存目标目录）"""
+    success, msg, dirs = await asyncio.to_thread(cloud115.get_dir_list, cid)
+    return {"success": success, "message": msg, "dirs": dirs}
+
+
+@app.get("/api/115/save_path")
+async def cloud115_save_path() -> dict:
+    path_id, path_name = cloud115.get_default_save_path()
+    return {"path_id": path_id, "path_name": path_name}
+
+
+@app.post("/api/115/save_path")
+async def cloud115_set_save_path(body: dict) -> dict:
+    path_id = (body.get("path_id") or "0").strip() or "0"
+    path_name = (body.get("path_name") or "").strip() or None
+    cloud115.set_default_save_path(path_id, path_name)
+    logger.info("115 默认保存目录已更新：%s (%s)", path_name, path_id)
+    return {"success": True, "message": "默认保存目录已更新"}
+
+
+def _magnets_by_movie(movie_id: str) -> list[dict]:
+    """取某部影片的全部版本磁力，返回 [{info_hash, magnet, title}]"""
+    rows, _ = query_items(movie_id=movie_id, page_size=10000)
+    out = []
+    for r in rows:
+        mag = r["magnet"] if isinstance(r, dict) else r["magnet"]
+        ih = r["info_hash"] if isinstance(r, dict) else r["info_hash"]
+        title = r["movie_title"] or r["title"] if isinstance(r, dict) else r["movie_title"]
+        if mag:
+            out.append({"info_hash": ih, "magnet": mag, "title": title})
+    return out
+
+
+@app.post("/api/115/transfer")
+async def cloud115_transfer(body: dict) -> dict:
+    """转存磁力到 115。body 可传：
+    - magnet: 直接转存该磁力链接
+    - info_hash: 从本地库按 info_hash 查磁力
+    - movie_id: 转存该片全部版本
+    """
+    magnet = (body.get("magnet") or "").strip()
+    info_hash = (body.get("info_hash") or "").strip()
+    movie_id = (body.get("movie_id") or "").strip()
+    if not magnet and not info_hash and not movie_id:
+        raise HTTPException(status_code=400, detail="需指定 magnet / info_hash / movie_id")
+
+    save_path_id, save_path_name = cloud115.get_default_save_path()
+    items = []  # [{info_hash, magnet, title}]
+    if magnet:
+        items.append({"info_hash": info_hash or "", "magnet": magnet, "title": body.get("title", "")})
+    elif info_hash:
+        rows, _ = query_items(keyword=info_hash, page_size=10)
+        for r in rows:
+            if r["info_hash"] == info_hash and r["magnet"]:
+                items.append({"info_hash": info_hash, "magnet": r["magnet"],
+                              "title": r["movie_title"] or r["title"]})
+                break
+    else:
+        items = _magnets_by_movie(movie_id)
+
+    if not items:
+        raise HTTPException(status_code=400, detail="未找到对应的磁力链接")
+
+    results = []
+    for m in items:
+        success, msg = await asyncio.to_thread(
+            cloud115.add_offline_task, m["magnet"], save_path_id)
+        results.append({"info_hash": m["info_hash"], "success": success, "message": msg})
+        if success:
+            await asyncio.sleep(1)
+        try:
+            transfer_history.add_record(
+                info_hash=m["info_hash"], movie_title=m["title"], magnet=m["magnet"],
+                success=success, message=msg, source="single")
+        except Exception:
+            logger.exception("转存历史记录失败")
+    success_count = sum(1 for r in results if r["success"])
+    return {"success": success_count == len(items),
+            "message": f"成功 {success_count}/{len(items)}（保存到: {save_path_name}）",
+            "results": results}
+
+
+@app.get("/api/115/tasks")
+async def cloud115_tasks(page: int = Query(1, ge=1)) -> dict:
+    success, msg, tasks = await asyncio.to_thread(cloud115.get_task_list, page)
+    return {"success": success, "message": msg, "tasks": tasks}
+
+
+@app.get("/api/115/history/recent")
+async def cloud115_history_recent(limit: int = Query(20, ge=1, le=100)) -> dict:
+    return {"records": transfer_history.get_recent(limit)}
+
+
+@app.get("/api/115/history/statistics")
+async def cloud115_history_statistics() -> dict:
+    return transfer_history.get_statistics()
 
 
 @app.get("/")

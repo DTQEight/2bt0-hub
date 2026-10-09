@@ -28,6 +28,7 @@ const TABS = {
   local: { category: "", view: "items", hint: "搜片名/hash/种子名…" },
   sync: {},
   logs: {},
+  cloud115: {},
 };
 
 const SECTIONS = { 1: "电影", 2: "电视剧" };
@@ -42,7 +43,11 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "sort-select", "sort-by",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
-  "sync-badge", "sync-badge-text", "sync-stop", "toast"]) {
+  "sync-badge", "sync-badge-text", "sync-stop", "toast",
+  "cloud115-view",
+  "c115-cookie", "c115-save-cookie", "c115-verify", "c115-cookie-status",
+  "c115-save-path", "c115-pick-dir", "c115-back-dir", "c115-dir-breadcrumb", "c115-dir-list",
+  "c115-stats", "c115-history", "c115-refresh-tasks", "c115-tasks"]) {
   el[id] = document.getElementById(id);
 }
 
@@ -138,12 +143,17 @@ function activateTab() {
   el["list-view"].hidden = !isList;
   el["sync-view"].hidden = tab !== "sync";
   el["logs-view"].hidden = tab !== "logs";
+  el["cloud115-view"].hidden = tab !== "cloud115";
   el.q.value = state.q; // 搜索框内容跟随视图状态（后退恢复时也要回填）
   applyCatFilter();
   if (tab === "logs") {
     stopSyncPolling();
     startLogPolling();
     loadLogs();
+  } else if (tab === "cloud115") {
+    stopLogPolling();
+    stopSyncPolling();
+    loadCloud115();
   } else {
     stopLogPolling();
     if (tab === "sync") {      refreshSyncUI(false); // 立即渲染 + 启动轮询
@@ -453,19 +463,24 @@ function refreshFilters() {
 
 let loadToken = 0; // 递增令牌：快速翻页/搜索时丢弃过期响应，避免慢请求覆盖新结果
 
-async function load() {
+// silent=true：就地更新（不动现有列表与状态行，不用"加载中…"顶掉内容），
+// 只用于切换画质胶囊这种"同一个影片、同一列表换条件"的场景，避免看起来像整页刷新。
+// 影片信息卡与胶囊条也不重画：重画会让胶囊闪一下、丢掉选中态。
+async function load(silent = false) {
   const token = ++loadToken;
   const cfg = TABS[state.tab];
   if (!cfg.view) return; // 同步 / 日志页不走列表加载
   // 片名视图是海报墙，走分组接口（分组结果不是磁力条目）
   const posterWall = state.localView === "groups" && !state.movieId;
   el.list.classList.toggle("poster-grid", posterWall);
-  // 胶囊条只属于「某部影片的版本列表」。这里必须**同步**清掉：loadQualityBar 是
-  // async 函数，函数体要等微任务才开始执行，而海报墙/分组接口可能要好几秒，
-  // 那段时间里上一部影片的胶囊会一直挂在屏幕上（切回片名列表还能看到并误点）
-  clearQualityBar();
+  if (!silent) {
+    // 胶囊条只属于「某部影片的版本列表」。这里必须**同步**清掉：loadQualityBar 是
+    // async 函数，函数体要等微任务才开始执行，而海报墙/分组接口可能要好几秒，
+    // 那段时间里上一部影片的胶囊会一直挂在屏幕上（切回片名列表还能看到并误点）
+    clearQualityBar();
+  }
   if (posterWall) {
-    return loadGroups(token);
+    return loadGroups(token, silent);
   }
   const params = new URLSearchParams({ source: "local", page: state.page });
   if (state.q) params.set("q", state.q);
@@ -474,20 +489,26 @@ async function load() {
   // 画质筛选只在「看某部影片的版本列表」时有意义（全库版本列表不做画质筛）
   if (state.movieId && state.quality) params.set("quality", state.quality);
 
-  el.status.className = "status";
-  el.status.textContent = "加载中…";
-  el.list.replaceChildren();
-  el.pager.replaceChildren();
-  renderMovieHead(); // 看某片版本时先渲染影片信息卡
-  loadQualityBar();  // 并拉取该片的画质分布（异步，不阻塞列表）
+  if (silent) {
+    el.list.classList.add("busy"); // 只做轻微视觉提示，内容留在原位
+  } else {
+    el.status.className = "status";
+    el.status.textContent = "加载中…";
+    el.list.replaceChildren();
+    el.pager.replaceChildren();
+    renderMovieHead(); // 看某片版本时先渲染影片信息卡
+    loadQualityBar();  // 并拉取该片的画质分布（异步，不阻塞列表）
+  }
 
   try {
     const res = await fetch(`/api/items?${params}`);
     const data = await res.json();
     if (token !== loadToken) return; // 已被更新的请求取代
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    el.list.classList.remove("busy");
     renderList(data);
   } catch (err) {
+    el.list.classList.remove("busy");
     if (token !== loadToken) return;
     el.status.className = "status error";
     el.status.textContent = `加载失败：${err.message}`;
@@ -497,6 +518,9 @@ async function load() {
 function renderList(data) {
   lastListData = data;
   const items = data.items || [];
+  // 列表在这里统一清空重建，而不是依赖调用方先清：silent（切画质胶囊的就地更新）
+  // 路径不清空旧行，若这里只 appendChild，新旧卡片会叠在一起（实测 12+19=31 行）
+  el.list.replaceChildren();
   el.status.textContent = statusText(data);
 
   if (!items.length) {
@@ -553,6 +577,7 @@ async function loadQualityBar() {
     return;
   }
   const id = state.movieId;
+  const prev = state.qualityCounts;
   try {
     const res = await fetch(`/api/movie/${encodeURIComponent(id)}/versions/qualities`);
     const data = await res.json();
@@ -565,6 +590,10 @@ async function loadQualityBar() {
 
   const list = state.qualityCounts || [];
   const total = list.reduce((s, q) => s + q.count, 0);
+  // 分布与上次一致（同一部影片再次进入列表）就不重画胶囊，避免闪一下、丢选中态
+  const same = !!prev && prev.length === list.length
+    && prev.every((p, i) => p.name === list[i].name && p.count === list[i].count);
+  if (same) return;
   bar.replaceChildren();
   // 只有一个桶时筛选没有意义，直接不显示
   if (!total || list.length < 2) {
@@ -607,7 +636,10 @@ function buildCard(item) {
     if (/^magnet:/i.test(item.magnet)) {
       actions.push(`<a class="act" href="${escapeHtml(item.magnet)}">打开</a>`);
     }
-    if (hash) actions.push(`<span class="hash" title="info_hash">${escapeHtml(hash.slice(0, 16))}…</span>`);
+    if (hash) {
+      actions.push(`<button type="button" class="act c115" data-hash="${escapeHtml(hash)}">转存115</button>`);
+      actions.push(`<span class="hash" title="info_hash">${escapeHtml(hash.slice(0, 16))}…</span>`);
+    }
   } else if (item.detail_url && /^https?:\/\//i.test(item.detail_url)) {
     actions.push(`<a class="act" href="${escapeHtml(item.detail_url)}" target="_blank" rel="noopener noreferrer">官网详情 ↗</a>`);
   }
@@ -621,12 +653,14 @@ function buildCard(item) {
 
   const copyBtn = li.querySelector("button.copy");
   if (copyBtn) copyBtn.addEventListener("click", () => copyText(copyBtn.dataset.magnet));
+  const tBtn = li.querySelector("button.c115");
+  if (tBtn) tBtn.addEventListener("click", () => transferTo115(tBtn.dataset.hash, item.title));
   return li;
 }
 
 // ---- 本地库「按片名」分组视图 ----
 
-async function loadGroups(token) {
+async function loadGroups(token, silent = false) {
   const params = new URLSearchParams({ page: state.page, sort: state.localSort });
   if (state.q) params.set("q", state.q);
   if (state.person) params.set("person", state.person);
@@ -640,19 +674,24 @@ async function loadGroups(token) {
   if (f.scoreMax < 10) params.set("score_max", f.scoreMax);
   if (f.imdbOnly) params.set("imdb_only", "true");
 
-  el.status.className = "status";
-  el.status.textContent = "加载中…";
-  el["movie-head"].replaceChildren();
-  el.list.replaceChildren();
-  el.pager.replaceChildren();
+  if (silent) el.list.classList.add("busy");
+  else {
+    el.status.className = "status";
+    el.status.textContent = "加载中…";
+    el["movie-head"].replaceChildren();
+    el.list.replaceChildren();
+    el.pager.replaceChildren();
+  }
 
   try {
     const res = await fetch(`/api/groups?${params}`);
     const data = await res.json();
     if (token !== loadToken) return; // 已被更新的请求取代
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    el.list.classList.remove("busy");
     renderGroups(data);
   } catch (err) {
+    el.list.classList.remove("busy");
     if (token !== loadToken) return;
     el.status.className = "status error";
     el.status.textContent = `加载失败：${err.message}`;
@@ -668,6 +707,8 @@ function renderGroups(data) {
   const prefix = bits.length
     ? `${bits.join(" ")}：${fmtNum(data.total_groups)} 部 · `
     : `共 ${fmtNum(data.total_groups)} 部影片 · `;
+  // 与 renderList 同理：清空放在这里，不依赖调用方（silent 路径不会先清）
+  el.list.replaceChildren();
   el.status.textContent = `${prefix}第 ${data.page} / ${data.total_pages} 页`;
 
   if (!groups.length) {
@@ -1396,8 +1437,12 @@ el["quality-bar"].addEventListener("click", (e) => {
   if (next === state.quality) return;
   state.quality = next;
   state.page = 1; // 换了筛选条件就回到第一页
+  // 选中态立即切换，不等接口回来（否则点击后有一段无反馈的空档）
+  for (const b of el["quality-bar"].querySelectorAll("button")) {
+    b.classList.toggle("active", b === btn);
+  }
   pushHistory();
-  load();
+  load(true); // 就地更新：不清空列表、不显示"加载中…"，避免看起来像整页刷新
 });
 
 // 筛选条：分类标签与高级筛选弹层都用事件委托（innerHTML 每次重画都会换掉按钮）
@@ -1489,6 +1534,198 @@ el["filter-toggle"].addEventListener("click", () => {
 });
 
 el["log-refresh"].addEventListener("click", loadLogs);
+
+// ---- 115 网盘转存 ----
+
+const c115DirStack = [{ cid: "0", name: "根目录" }]; // 目录浏览栈，栈顶是当前目录
+
+async function fetchJSON(url, opts) {
+  const r = await fetch(url, opts);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || data.message || `HTTP ${r.status}`);
+  return data;
+}
+
+async function loadCloud115() {
+  // 并发加载配置、统计、历史、任务
+  const [cfg, stats, hist, tasks] = await Promise.all([
+    fetchJSON("/api/115/config").catch(() => ({})),
+    fetchJSON("/api/115/history/statistics").catch(() => ({})),
+    fetchJSON("/api/115/history/recent?limit=20").catch(() => ({ records: [] })),
+    fetchJSON("/api/115/tasks?page=1").catch(() => ({ tasks: [] })),
+  ]);
+  // 配置
+  el["c115-cookie-status"].textContent = cfg.has_cookie
+    ? `已配置（${escapeHtml(cfg.cookie_masked)}）` : "未配置";
+  el["c115-save-path"].textContent = cfg.save_path_name || "根目录";
+  // 统计
+  el["c115-stats"].innerHTML = [
+    ["今日成功", stats.today_success ?? 0, "ok"],
+    ["今日失败", stats.today_fail ?? 0, "bad"],
+    ["累计成功", stats.total_success ?? 0, "ok"],
+    ["累计失败", stats.total_fail ?? 0, "bad"],
+  ].map(([l, v, c]) => `<div class="stat-item"><span class="stat-val ${c}">${v}</span><span class="stat-label">${l}</span></div>`).join("");
+  // 历史
+  renderC115History(hist.records || []);
+  // 任务
+  renderC115Tasks(tasks.tasks || []);
+  // 目录浏览：栈顶是当前目录
+  if (c115DirStack.length === 1) c115DirStack[0] = { cid: "0", name: "根目录" };
+  c115LoadDirs(c115DirStack[c115DirStack.length - 1].cid);
+}
+
+function renderC115History(records) {
+  if (!records.length) {
+    el["c115-history"].innerHTML = '<div class="empty">暂无转存记录</div>';
+    return;
+  }
+  el["c115-history"].innerHTML = records.map(r => {
+    const t = (r.time || "").replace("T", " ").slice(0, 16);
+    const cls = r.success ? "ok" : "bad";
+    return `<div class="hist-row">
+      <span class="hist-time">${escapeHtml(t)}</span>
+      <span class="hist-title">${escapeHtml(r.movie_title || "(未知)")}</span>
+      <span class="hist-msg ${cls}">${escapeHtml(r.message || "")}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderC115Tasks(tasks) {
+  if (!tasks.length) {
+    el["c115-tasks"].innerHTML = '<div class="empty">暂无离线任务</div>';
+    return;
+  }
+  el["c115-tasks"].innerHTML = tasks.map(t => {
+    const name = t.name || t.file_name || t.title || "(无名称)";
+    const size = t.size ? `${(t.size / 1073741824).toFixed(2)} GB` : "";
+    const status = t.status_name || t.state_str || t.status || "";
+    return `<div class="task-row">
+      <span class="task-name">${escapeHtml(name)}</span>
+      <span class="task-size">${escapeHtml(size)}</span>
+      <span class="task-status">${escapeHtml(String(status))}</span>
+    </div>`;
+  }).join("");
+}
+
+async function c115SaveCookie() {
+  const cookie = el["c115-cookie"].value.trim();
+  if (!cookie) { showToast("请输入 Cookie"); return; }
+  try {
+    const r = await fetchJSON("/api/115/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cookie }),
+    });
+    el["c115-cookie"].value = "";
+    showToast(r.message);
+    loadCloud115();
+  } catch (e) { showToast(e.message); }
+}
+
+async function c115Verify() {
+  el["c115-cookie-status"].textContent = "验证中…";
+  try {
+    const r = await fetchJSON("/api/115/verify", { method: "POST" });
+    el["c115-cookie-status"].textContent = r.message;
+  } catch (e) {
+    el["c115-cookie-status"].textContent = `验证失败: ${e.message}`;
+  }
+}
+
+async function c115LoadDirs(cid) {
+  try {
+    const r = await fetchJSON(`/api/115/dirs?cid=${cid}`);
+    const top = c115DirStack[c115DirStack.length - 1];
+    el["c115-dir-breadcrumb"].textContent = top.name || "根目录";
+    if (!r.success) {
+      el["c115-dir-list"].innerHTML = `<div class="empty">${escapeHtml(r.message)}</div>`;
+      return;
+    }
+    const dirs = r.dirs || [];
+    if (!dirs.length) {
+      el["c115-dir-list"].innerHTML = '<div class="empty">该目录下没有子目录</div>';
+      return;
+    }
+    el["c115-dir-list"].innerHTML = dirs.map(d =>
+      `<button type="button" class="dir-item" data-cid="${escapeHtml(d.cid)}" data-name="${escapeHtml(d.name)}">📁 ${escapeHtml(d.name)}</button>`
+    ).join("");
+  } catch (e) {
+    el["c115-dir-list"].innerHTML = `<div class="empty">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// 目录列表事件委托
+el["c115-dir-list"].addEventListener("click", (e) => {
+  const btn = e.target.closest("button.dir-item");
+  if (!btn) return;
+  c115DirStack.push({ cid: btn.dataset.cid, name: btn.dataset.name });
+  c115LoadDirs(btn.dataset.cid);
+});
+
+// 选当前目录为默认保存目录
+el["c115-pick-dir"].addEventListener("click", async () => {
+  const top = c115DirStack[c115DirStack.length - 1];
+  try {
+    await fetchJSON("/api/115/save_path", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path_id: top.cid, path_name: top.name }),
+    });
+    el["c115-save-path"].textContent = top.name;
+    showToast(`默认转存目录已设为：${top.name}`);
+  } catch (e) { showToast(e.message); }
+});
+
+// 返回上级目录
+el["c115-back-dir"].addEventListener("click", () => {
+  if (c115DirStack.length > 1) {
+    c115DirStack.pop();
+    c115LoadDirs(c115DirStack[c115DirStack.length - 1].cid);
+  }
+});
+
+el["c115-save-cookie"].addEventListener("click", c115SaveCookie);
+el["c115-verify"].addEventListener("click", c115Verify);
+el["c115-refresh-tasks"].addEventListener("click", async () => {
+  try {
+    const r = await fetchJSON("/api/115/tasks?page=1");
+    renderC115Tasks(r.tasks || []);
+  } catch (e) { showToast(e.message); }
+});
+
+// 转存单个磁力（从版本列表里的按钮触发）
+async function transferTo115(infoHash, title) {
+  try {
+    const r = await fetchJSON("/api/115/transfer", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ info_hash: infoHash }),
+    });
+    showToast(`${title ? title + "：" : ""}${r.message}`);
+    // 刷新历史和统计
+    const [hist, stats] = await Promise.all([
+      fetchJSON("/api/115/history/recent?limit=20").catch(() => ({ records: [] })),
+      fetchJSON("/api/115/history/statistics").catch(() => ({})),
+    ]);
+    renderC115History(hist.records || []);
+    el["c115-stats"].innerHTML = [
+      ["今日成功", stats.today_success ?? 0, "ok"],
+      ["今日失败", stats.today_fail ?? 0, "bad"],
+      ["累计成功", stats.total_success ?? 0, "ok"],
+      ["累计失败", stats.total_fail ?? 0, "bad"],
+    ].map(([l, v, c]) => `<div class="stat-item"><span class="stat-val ${c}">${v}</span><span class="stat-label">${l}</span></div>`).join("");
+  } catch (e) { showToast(e.message); }
+}
+
+// 转存整部影片的所有版本
+async function transferMovieTo115(movieId, title) {
+  try {
+    const r = await fetchJSON("/api/115/transfer", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ movie_id: movieId }),
+    });
+    showToast(`${title ? title + "：" : ""}${r.message}`);
+    const hist = await fetchJSON("/api/115/history/recent?limit=20").catch(() => ({ records: [] }));
+    renderC115History(hist.records || []);
+  } catch (e) { showToast(e.message); }
+}
 
 // 初始化
 // 手机窄屏默认收起筛选条，避免一屏全是标签（桌面端保持展开）
