@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from db import (filter_options, get_movie, get_sync_progress, init_db, query_groups,
-                upsert_items)
+                quality_counts, upsert_items)
 from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
@@ -110,12 +110,14 @@ async def items(
     sc: int = Query(1, ge=1, le=2, description="板块：1=电影 2=电视剧"),
     category: str = Query("", max_length=20, description="本地库分类过滤，空为全部"),
     movie_id: str = Query("", max_length=30, description="本地库：只看某部影片的版本"),
+    quality: str = Query("", max_length=20,
+                         description="本地库：只看某画质桶（见 /api/movie/{id}/versions/qualities）"),
 ) -> dict:
     name = source
     try:
         result = await get_source(name).fetch_page(
             page=page, query=q.strip(), section=sc, category=category.strip(),
-            movie_id=movie_id.strip())
+            movie_id=movie_id.strip(), quality=quality.strip())
     except SourceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # 抓取失败统一转成 502，避免把堆栈暴露给前端
@@ -264,6 +266,17 @@ async def movie_detail(idcode: str) -> dict:
     """影片详情（站点 getVideoDetail 的元数据）；未拉取过时 movie 为 null"""
     movie = await asyncio.to_thread(get_movie, idcode)
     return {"movie": _local_image(dict(movie)) if movie else None}
+
+
+@app.get("/api/movie/{idcode}/versions/qualities")
+async def movie_version_qualities(idcode: str) -> dict:
+    """该影片各画质桶的版本数（详情页「磁力链接」筛选条用）。
+
+    只统计这部片子的种子，按需分类、不落库，只返回 count>0 的桶。
+    """
+    counts = await asyncio.to_thread(quality_counts, idcode)
+    return {"qualities": [{"name": k, "count": v} for k, v in counts.items()],
+            "total": sum(counts.values())}
 
 
 # ---- 影片详情批量拉取 ----

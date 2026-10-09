@@ -13,6 +13,7 @@
 - **三个列表 Tab 都读本地库**：电影 / 电视剧 Tab 是各自板块的片名海报墙（每页 24 部，可按最新入库/评分最高/评分人数/上映时间/版本数排序）；「本地磁力库」是全部板块的全部磁力版本列表，可切电影 / 电视剧 / 全部；搜索均匹配片名、原名、别名、演员、导演、种子名与 info_hash
 - **筛选条**：分类参考主站影片库（影视类型 / 制片地区 / 上映年份 / 资源画质 / 影视标签 五组标签 + 排序方式 + 高级筛选：评分人数、豆瓣评分区间、仅看 IMDb），站点那项「仅显示网盘资源」不做；可选项由本地库实际数据聚合，点了一定有结果
 - **影片详情卡**：点开某部影片后置顶展示，布局参考主站详情页（250×375 海报 + 片名年份 + 原名/别名 + 导演/编剧/主演/类型/地区/语言/上映日期/片长 + 豆瓣与 IMDb 评分胶囊外链 + 剧情简介限高滚动）；导演/编剧/主演的**姓名可点**，点了回到海报墙只看这个人的作品
+- **影片详情页画质筛选**：这部片子的磁力按画质分桶（HDTV / WEB-1080P / WEB-4K / 1080P蓝光 / 1080P-Remux / 4K蓝光 / 4K蓝光原盘 / 蓝光原盘 / 3D / 杜比视界 / 720P / 标清 / 枪版 / 其他），点胶囊只看该画质，标签带条数、空桶自动隐藏；规则见 `app/quality.py`，只对这部影片的种子按需计算、不落库。注意它与筛选条里的「资源画质」不是一回事：那个来自影片详情字段（Blu-ray 这种介质标记），这个是从**种子标题**里解析出的发布规格（`BluRay.REMUX.1080p`）
 - **影片资料**：片名、原名、别名、年份、上映日期、类型、地区、语言、片长、豆瓣/IMDB 评分、导演、编剧、主演、剧情简介
 - **海报本地化**：拉影片详情时把图床海报下载到 `DATA_DIR/posters`，由 `/posters/{文件名}` 提供，图床限流或下线也不影响浏览；扩展名按图片真实字节判断（图床会把 WebP 当 `image/png` 返回）
 - **每日定时增量**：到点自动对电影、电视剧依次追新，每个板块跑完自动跟进该板块的新片详情（海报/评分），开关与时间可在网页修改
@@ -56,6 +57,7 @@ app/
   sync.py           全量同步 / 增量更新 / 断点续抓
   movies.py         影片详情批量拉取（4 线程后台任务）+ 顺手本地化海报
   posters.py        海报本地化（图床下载 → DATA_DIR/posters）
+  quality.py        种子画质分桶（BluRay.Remux.1080p → 「1080P-Remux」等标签）
   scheduler.py      每日定时增量 + 手动数据库备份
   sources/
     base.py         数据源抽象（Item / PageResult / Source）
@@ -146,10 +148,11 @@ app/
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/items` | 抓取/浏览条目（`source`、`sc`、`q`、`page`、`category`、`movie_id`） |
+| GET | `/api/items` | 抓取/浏览条目（`source`、`sc`、`q`、`page`、`category`、`movie_id`、`quality`） |
 | GET | `/api/groups` | 本地库按片名分组（海报墙）：`q`、`person`（人名精确筛选）、`category`、`sort`、`page`；筛选 `ftype`/`farea`/`fyears`/`fquality`/`ftag`/`votes_min`/`score_min`/`score_max`/`imdb_only` |
 | GET | `/api/filters` | 筛选条可选项（`category` 可选）：只返回本地库确实有数据的标签 |
 | GET | `/api/movie/{idcode}` | 影片详情 |
+| GET | `/api/movie/{idcode}/versions/qualities` | 该影片各画质桶的版本数（详情页磁力筛选条；只返回有货的桶） |
 | GET | `/posters/{文件名}` | 本地缓存的海报图（未缓存返回 404，前端回落图床） |
 | POST | `/api/sync/start` | 启动同步（`section`、`mode`、`start_page`、`workers`） |
 | GET | `/api/sync/status` | 同步状态（进度、速度、ETA） |

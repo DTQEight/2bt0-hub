@@ -197,6 +197,28 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; }
   background: var(--panel-2);
 }
 
+/* 画质筛选条（电影详情页的磁力列表）：与板块筛选同款胶囊，放在状态行上方 */
+.quality-bar {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0 12px;
+  flex-wrap: wrap;
+}
+
+.quality-bar .q-chip {
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.quality-bar .q-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
 /* 板块筛选行（只有「本地磁力库」用得到） */
 .filters {
   display: flex;
@@ -1098,6 +1120,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .mh-poster { width: 150px; }
   .mh-title { font-size: 21px; }
   .mh-meta { grid-template-columns: 1fr; }
+
+  /* 画质胶囊在窄屏横滑，避免换行三行挤掉列表 */
+  .quality-bar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .quality-bar .q-chip { flex-shrink: 0; }
 
   /* 筛选条：五组标签很长，手机上默认收起（初始收起态见 JS），按钮点开再看 */
   .filter-toggle { padding: 7px 14px; }

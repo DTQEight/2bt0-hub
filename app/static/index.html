@@ -61,6 +61,9 @@
         <div class="filter-body" id="filter-body"></div>
       </div>
       <div id="movie-head"></div>
+      <!-- 画质筛选条：只在看某部影片的磁力列表时出现（种子标题里的画质标记，
+           由后端 quality.py 按需分桶，见 /api/movie/{id}/versions/qualities） -->
+      <div class="quality-bar" id="quality-bar" hidden></div>
       <div id="status" class="status">加载中…</div>
       <ul id="list" class="list"></ul>
       <nav id="pager" class="pager" aria-label="分页"></nav>

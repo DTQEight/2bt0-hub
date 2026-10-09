@@ -16,6 +16,8 @@ const state = {
   },
   movieId: "", // 非空＝正在看某部影片的全部版本
   movieTitle: "", // 该影片片名（分组接口带回，用于详情未拉取时兜底显示）
+  quality: "", // 画质桶筛选：空=全部；非空时只看该画质的磁力版本（只用于某部影片的版本列表）
+  qualityCounts: null, // 该影片各画质桶的版本数（[{name,count}]），详情页筛选条用
   prevRunning: false,
 };
 
@@ -36,6 +38,7 @@ const el = {};
 for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "list-view", "cat-filter",
   "filter-panel", "filter-body", "filter-toggle", "filter-active", "filter-reset",
+  "quality-bar",
   "sort-select", "sort-by",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
@@ -110,6 +113,8 @@ function switchTab(tab, push = true) {
   state.q = "";
   state.movieId = "";
   state.movieTitle = "";
+  state.quality = "";
+  state.qualityCounts = null;
   // 切 Tab 时按该 Tab 的定位复位视图与板块：电影/电视剧看各自板块的片名海报墙，
   // 本地磁力库看全部板块的全部版本列表
   const cfg = TABS[tab];
@@ -141,8 +146,7 @@ function activateTab() {
     loadLogs();
   } else {
     stopLogPolling();
-    if (tab === "sync") {
-      refreshSyncUI(false); // 立即渲染 + 启动轮询
+    if (tab === "sync") {      refreshSyncUI(false); // 立即渲染 + 启动轮询
       loadSchedule();
     } else {
       applySearchbar();
@@ -161,6 +165,7 @@ function snapshotState() {
     localCategory: state.localCategory, localView: state.localView,
     localSort: state.localSort, localFilters: { ...state.localFilters },
     movieId: state.movieId, movieTitle: state.movieTitle,
+    quality: state.quality,
   };
 }
 
@@ -178,6 +183,7 @@ function restoreState(s) {
   state.localSort = s.localSort;
   state.movieId = s.movieId;
   state.movieTitle = s.movieTitle;
+  state.quality = s.quality || "";
   state.localFilters = { ...s.localFilters };
   activateTab();
 }
@@ -461,12 +467,15 @@ async function load() {
   if (state.q) params.set("q", state.q);
   if (state.localCategory) params.set("category", state.localCategory);
   if (state.movieId) params.set("movie_id", state.movieId);
+  // 画质筛选只在「看某部影片的版本列表」时有意义（全库版本列表不做画质筛）
+  if (state.movieId && state.quality) params.set("quality", state.quality);
 
   el.status.className = "status";
   el.status.textContent = "加载中…";
   el.list.replaceChildren();
   el.pager.replaceChildren();
   renderMovieHead(); // 看某片版本时先渲染影片信息卡
+  loadQualityBar();  // 并拉取该片的画质分布（异步，不阻塞列表）
 
   try {
     const res = await fetch(`/api/items?${params}`);
@@ -482,18 +491,15 @@ async function load() {
 }
 
 function renderList(data) {
+  lastListData = data;
   const items = data.items || [];
-  const searching = !!state.q;
-  const prefix = searching
-    ? `搜索“${state.q}”命中 ${data.total_items} 条 · `
-    : `本地库共 ${data.total_items} 条 · `;
-  el.status.textContent = `${prefix}第 ${data.page} / ${data.total_pages} 页`;
+  el.status.textContent = statusText(data);
 
   if (!items.length) {
     const li = document.createElement("li");
     li.className = "empty";
     // 仅在"无筛选且无关键词"时才提示库为空，否则只是当前条件没命中
-    const filtered = state.q || state.localCategory || state.movieId;
+    const filtered = state.q || state.localCategory || state.movieId || state.quality;
     li.textContent = filtered
       ? "没有匹配的结果"
       : "本地库为空。在「同步」页启动全量同步即可建库，之后这里能按板块浏览、检索与追新";
@@ -503,6 +509,76 @@ function renderList(data) {
 
   for (const item of items) el.list.appendChild(buildCard(item));
   buildPager(data.page, data.total_pages);
+}
+
+// 最近一次列表响应：画质分布是另一个异步请求，回来时要重画状态行（条数/页数）
+let lastListData = null;
+
+// 状态行文案。看某部影片时按画质分布显示总数——否则一带画质筛选，
+// data.total_items 就成了"筛选后的条数"，用户会以为这部片只有这么多版本。
+function statusText(data) {
+  const posterTotal = state.qualityCounts
+    ? state.qualityCounts.reduce((s, q) => s + q.count, 0) : 0;
+  if (state.movieId && posterTotal) {
+    const scope = state.quality
+      ? `${state.quality} ${data.total_items} 条 · 这部影片共 ${posterTotal} 条`
+      : `这部影片共 ${posterTotal} 条`;
+    return `${scope} · 第 ${data.page} / ${data.total_pages} 页`;
+  }
+  const prefix = state.q
+    ? `搜索“${state.q}”命中 ${data.total_items} 条 · `
+    : `本地库共 ${data.total_items} 条 · `;
+  return `${prefix}第 ${data.page} / ${data.total_pages} 页`;
+}
+
+// 画质筛选条：看某部影片的磁力列表时，展示这部片子按画质分桶的版本数。
+// 空桶（如"4K蓝光原盘"在该站只有 2 条）不显示，避免点了一定没结果。
+async function loadQualityBar() {
+  const bar = el["quality-bar"];
+  if (!state.movieId) {
+    bar.hidden = true;
+    bar.replaceChildren();
+    state.qualityCounts = null;
+    return;
+  }
+  const id = state.movieId;
+  try {
+    const res = await fetch(`/api/movie/${encodeURIComponent(id)}/versions/qualities`);
+    const data = await res.json();
+    if (state.movieId !== id) return; // 期间已切走
+    state.qualityCounts = data.qualities || [];
+  } catch {
+    if (state.movieId !== id) return;
+    state.qualityCounts = null; // 取不到就不显示筛选条，列表照常可用
+  }
+
+  const list = state.qualityCounts || [];
+  const total = list.reduce((s, q) => s + q.count, 0);
+  bar.replaceChildren();
+  // 只有一个桶时筛选没有意义，直接不显示
+  if (!total || list.length < 2) {
+    bar.hidden = true;
+  } else {
+    bar.hidden = false;
+    const mk = (name, count) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.q = name;
+      b.className = "q-chip" + (state.quality === name ? " active" : "");
+      b.textContent = `${name || "全部"} (${count})`;
+      return b;
+    };
+    bar.appendChild(mk("", total));
+    for (const q of list) bar.appendChild(mk(q.name, q.count));
+    // 选中的桶若已不存在（例如数据变了），回到"全部"
+    if (state.quality && !list.some((q) => q.name === state.quality)) {
+      state.quality = "";
+    }
+  }
+  // 分布刚到，重画状态行（条数与页数要用新总数）
+  if (lastListData && state.movieId === id) {
+    el.status.textContent = statusText(lastListData);
+  }
 }
 
 function buildCard(item) {
@@ -600,6 +676,7 @@ function renderGroups(data) {
 function buildGroupCard(g) {
   const li = document.createElement("li");
   li.className = "poster-card";
+  li.dataset.movieId = g.movie_id; // 便于定位/测试：一部影片一张卡
   const title = g.title || g.movie_title || `影片 ${g.movie_id}`;
   // 站点用 0 / @ 表示"暂无评分"，不显示角标
   const score = g.doub_score && !["0", "@"].includes(g.doub_score) ? g.doub_score : "";
@@ -627,6 +704,8 @@ function openMovie(id, title) {
   state.movieTitle = title || "";
   state.page = 1;
   state.q = "";
+  state.quality = "";
+  state.qualityCounts = null;
   el.q.value = "";
   pushHistory();
   applyCatFilter();
@@ -637,6 +716,8 @@ function openMovie(id, title) {
 function backToGroups() {
   state.movieId = "";
   state.movieTitle = "";
+  state.quality = "";
+  state.qualityCounts = null;
   state.page = 1;
   state.localView = "groups";
   pushHistory();
@@ -1289,8 +1370,22 @@ el["cat-filter"].addEventListener("click", (e) => {
   state.page = 1;
   state.movieId = "";
   state.movieTitle = "";
+  state.quality = "";
+  state.qualityCounts = null;
   pushHistory();
   applyCatFilter();
+  load();
+});
+
+// 画质筛选条：只在某部影片的版本列表里出现（事件委托，每次重画都会换按钮）
+el["quality-bar"].addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-q]");
+  if (!btn || !state.movieId) return;
+  const next = btn.dataset.q || "";
+  if (next === state.quality) return;
+  state.quality = next;
+  state.page = 1; // 换了筛选条件就回到第一页
+  pushHistory();
   load();
 });
 

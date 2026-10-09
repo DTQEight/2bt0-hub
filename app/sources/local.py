@@ -13,10 +13,12 @@ from .base import Item, PageResult, Source, SourceError
 PAGE_SIZE = 20
 
 
-def _query(page: int, keyword: str, category: str, movie_id: str) -> PageResult:
+def _query(page: int, keyword: str, category: str, movie_id: str,
+           quality: str = "") -> PageResult:
     try:
         rows, total = query_items(page=page, keyword=keyword, category=category,
-                                  movie_id=movie_id, page_size=PAGE_SIZE)
+                                  movie_id=movie_id, page_size=PAGE_SIZE,
+                                  quality_bucket=quality)
     except Exception as exc:
         raise SourceError(f"本地库查询失败: {exc}") from exc
     items = [Item(
@@ -48,4 +50,5 @@ class LocalSource(Source):
                          category: str = "", movie_id: str = "",
                          **kwargs) -> PageResult:
         return await asyncio.to_thread(
-            _query, page, query.strip(), category, movie_id.strip())
+            _query, page, query.strip(), category, movie_id.strip(),
+            (kwargs.get("quality") or "").strip())

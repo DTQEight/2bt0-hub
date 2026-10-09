@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import quality
+
 logger = logging.getLogger("resource-hub.db")
 
 _LOCK = threading.Lock()  # 序列化写事务
@@ -284,12 +286,46 @@ def upsert_items(source: str, items) -> int:
     return len({h for h in hashes if h not in existing})
 
 
+# ---- 种子画质桶（quality.py）----
+#
+# 只服务于「电影详情页按画质筛这部片子的磁力」。一部影片平均 8.8 个版本
+# （实测分布：3.5 万部只有 1 个版本，最长尾的电视剧 2117 个），所以**不落库、
+# 不回填**：查询时对这部影片的几十行跑一遍 quality.classify 就够了（毫秒级）。
+# 全库 82 万行要是也想按画质筛，再考虑加列+索引（那时才值得付出回填 40 秒的代价）。
+
+def _quality_udf(title) -> str:
+    """注册给 SQLite 的画质分类函数（供 WHERE/GROUP BY 直接用）。"""
+    return quality.classify(title if isinstance(title, str) else "")
+
+
+def _register_quality(conn: sqlite3.Connection) -> None:
+    quality.register_udf(conn, "quality_bucket")
+
+
+def quality_counts(movie_id: str) -> dict[str, int]:
+    """某部影片各画质桶的版本数（详情页筛选条用）。
+
+    只返回 count>0 的桶，顺序按 quality.BUCKETS（画质从高到低）。
+    走 idx_magnets_movie_group 只扫这部影片的行，不触全表。
+    """
+    if not movie_id:
+        return {}
+    with _db() as conn:
+        _register_quality(conn)
+        rows = conn.execute(
+            "SELECT quality_bucket(title), COUNT(*) FROM magnets "
+            "WHERE movie_id = ? GROUP BY 1", (movie_id,)).fetchall()
+    got = {r[0]: r[1] for r in rows}
+    return {b: got[b] for b in quality.BUCKETS if got.get(b)}
+
+
 def query_items(page: int = 1, keyword: str = "", category: str = "",
-                movie_id: str = "", page_size: int = 20):
+                movie_id: str = "", page_size: int = 20, quality_bucket: str = ""):
     """查询本地库（按入库先后倒序）。
 
     keyword 模糊匹配标题/种子名/hash/分类；category 为精确分类过滤（如"电影"）；
-    movie_id 过滤某部影片的全部版本。返回 (rows, total)。
+    movie_id 过滤某部影片的全部版本；quality_bucket 按画质桶过滤（见 quality.py）。
+    返回 (rows, total)。
     """
     conds, params = [], []
     if category:
@@ -298,6 +334,10 @@ def query_items(page: int = 1, keyword: str = "", category: str = "",
     if movie_id:
         conds.append("movie_id = ?")
         params.append(movie_id)
+    if quality_bucket:
+        # 只对这部影片的行跑分类器（走 idx_magnets_movie_group 定位，行数很少）
+        conds.append("quality_bucket(title) = ?")
+        params.append(quality_bucket)
     if keyword:
         kw = f"%{keyword}%"
         # 除种子自身字段外，还匹配影片的原名/别名/导演/主演（存在 movies 表）
@@ -310,6 +350,8 @@ def query_items(page: int = 1, keyword: str = "", category: str = "",
     where = " AND ".join(conds) or "1=1"
     offset = (page - 1) * page_size
     with _db() as conn:
+        if quality_bucket:
+            _register_quality(conn)   # quality_bucket() 只有这时才用得上
         total = conn.execute(
             f"SELECT COUNT(*) FROM magnets WHERE {where}", params).fetchone()[0]
         if keyword:
