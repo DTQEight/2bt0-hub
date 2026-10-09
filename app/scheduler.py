@@ -2,7 +2,8 @@
 
 - 只做增量更新（扫前 10 页追新），不做全量；板块必须已完成全量同步
 - 两个板块共用一个同步器，必须串行：电影跑完再跑电视剧
-- 每个板块跑完自动跟进该板块的新增影片详情（海报/评分等），最后备份数据库
+- 每个板块跑完自动跟进该板块的新增影片详情（海报/评分等）
+- 不自动备份数据库（日常快照性价比太低，理由见 run_daily_incremental）
 - 已有同步在跑（例如手动全量）时跳过当天，避免互相打断
 - 开关与触发小时存在数据库里，网页「同步」页可随时修改，调度线程每 30 秒读取一次
 - 容器时区由 TZ 决定（compose 里为 Asia/Shanghai），按容器本地时间触发
@@ -28,7 +29,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
 DEFAULT_HOUR = int(os.getenv("SYNC_HOUR", "3"))
 # 调度线程轮询间隔：兼作"重读配置"和"等待到点"的粒度
 POLL_SECONDS = 30
-# 每日增量跑完后自动备份，只保留最近 N 份
+# 手动备份（backup_database）时保留最近 N 份；自动备份已关闭
 BACKUP_KEEP = 7
 
 _KEY_ENABLED = "schedule.enabled"
@@ -73,7 +74,12 @@ def next_run_at(cfg: dict | None = None) -> datetime | None:
 # ---- 执行 ----
 
 def backup_database() -> None:
-    """备份数据库：VACUUM INTO 生成带日期的紧凑快照，只保留最近 BACKUP_KEEP 份"""
+    """手动备份数据库：VACUUM INTO 生成带日期的紧凑快照，只保留最近 BACKUP_KEEP 份。
+
+    已不再由每日增量自动调用（见 run_daily_incremental 的说明），
+    在改动数据结构、重抓全量之前手动跑一次即可：
+        docker exec resource-hub python -c "import scheduler; scheduler.backup_database()"
+    """
     backup_dir = DATA_DIR / "backups"
     target = backup_dir / f"magnets-{datetime.now():%Y%m%d}.db"
     # VACUUM INTO 目标已存在时会报错（同一天再次触发：手动跑增量/时区跳变）。
@@ -88,6 +94,8 @@ def backup_database() -> None:
         return
     logger.info("数据库已备份：%s（%.1f MB）", target.name,
                 target.stat().st_size / 1048576)
+    # 只清理本函数生成的自动命名快照，别动手动命名的文件（如 manual-*.db）；
+    # 单独 glob 而不混排，避免名字排序把不该删的挤出去
     for old in sorted(backup_dir.glob("magnets-*.db"))[:-BACKUP_KEEP]:
         try:
             old.unlink()
@@ -97,9 +105,15 @@ def backup_database() -> None:
 
 
 def run_daily_incremental() -> None:
-    """依次对电影、电视剧执行增量更新（一个跑完再跑下一个），最后备份数据库。
+    """依次对电影、电视剧执行增量更新（一个跑完再跑下一个）。
 
     每个板块跑完后，同步器会自动跟进该板块的新增影片详情（海报/评分）。
+
+    这里不再自动备份数据库：每天新增只有几十到几千条、约 1~2 MB，
+    而一份 VACUUM 快照约 640 MB，日备等于拿 640 MB 存 1 MB 的变化，
+    还会让备份目录按 640 MB/天 无上限增长。库里所有内容站点上都在、
+    都能重抓，日常快照防的只是"重抓 3~8 小时"这点代价。需要还原点时
+    手动调用 backup_database()（改动结构或全量重抓之前跑一次）。
     """
     logger.info("每日增量更新开始")
     for section in sorted(SECTIONS):
@@ -116,7 +130,6 @@ def run_daily_incremental() -> None:
             time.sleep(2)
         logger.info("每日增量：%s 结束（%s）", label, sync_manager.state["message"])
     logger.info("每日增量更新结束")
-    backup_database()
 
 
 def _loop() -> None:
