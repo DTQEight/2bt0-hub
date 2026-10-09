@@ -460,6 +460,10 @@ async function load() {
   // 片名视图是海报墙，走分组接口（分组结果不是磁力条目）
   const posterWall = state.localView === "groups" && !state.movieId;
   el.list.classList.toggle("poster-grid", posterWall);
+  // 胶囊条只属于「某部影片的版本列表」。这里必须**同步**清掉：loadQualityBar 是
+  // async 函数，函数体要等微任务才开始执行，而海报墙/分组接口可能要好几秒，
+  // 那段时间里上一部影片的胶囊会一直挂在屏幕上（切回片名列表还能看到并误点）
+  clearQualityBar();
   if (posterWall) {
     return loadGroups(token);
   }
@@ -531,13 +535,20 @@ function statusText(data) {
   return `${prefix}第 ${data.page} / ${data.total_pages} 页`;
 }
 
+// 立即清空画质胶囊条（同步，不经过 await）。用于离开影片版本列表时，
+// 避免上一部影片的胶囊在新页面渲染完成前残留、被误当成当前视图的筛选。
+function clearQualityBar() {
+  const bar = el["quality-bar"];
+  bar.hidden = true;
+  bar.replaceChildren();
+}
+
 // 画质筛选条：看某部影片的磁力列表时，展示这部片子按画质分桶的版本数。
 // 空桶（如"4K蓝光原盘"在该站只有 2 条）不显示，避免点了一定没结果。
 async function loadQualityBar() {
   const bar = el["quality-bar"];
   if (!state.movieId) {
-    bar.hidden = true;
-    bar.replaceChildren();
+    clearQualityBar();
     state.qualityCounts = null;
     return;
   }
