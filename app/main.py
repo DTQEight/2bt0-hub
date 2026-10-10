@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from db import (filter_options, get_movie, get_sync_progress, init_db, query_groups,
-                query_items, upsert_items)
+                query_items, quality_counts, upsert_items)
 from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
