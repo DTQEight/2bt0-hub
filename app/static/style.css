@@ -1209,17 +1209,26 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   gap: 16px;
   align-items: start;
 }
-.cloud115-layout .card {
-  background: var(--card-bg);
+.cloud115-layout .panel {
+  display: block;
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: 16px;
   margin-bottom: 14px;
 }
-.cloud115-layout .card h3 {
+.cloud115-layout .panel h3 {
   margin: 0 0 12px;
   font-size: 15px;
+  font-weight: 600;
 }
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.panel-head h3 { margin: 0; }
 .cloud115-left .field {
   display: flex;
   flex-direction: column;
@@ -1234,6 +1243,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-radius: 6px;
   color: var(--text);
   font-size: 13px;
+  width: 100%;
+  box-sizing: border-box;
 }
 .cloud115-left .row {
   display: flex;
@@ -1242,7 +1253,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
-.cloud115-left button {
+.cloud115-left button, .btn-sm {
   padding: 6px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -1251,24 +1262,25 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   cursor: pointer;
   font-size: 13px;
 }
-.cloud115-left button:hover { background: var(--hover); }
+.cloud115-left button:hover, .btn-sm:hover { background: var(--hover); }
 .muted { color: var(--muted); font-size: 12px; }
 .dir-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 280px;
+  max-height: 300px;
   overflow-y: auto;
 }
 .dir-item {
   text-align: left;
-  padding: 6px 10px;
-  border-radius: 5px;
+  padding: 8px 10px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--input-bg);
   color: var(--text);
   cursor: pointer;
   font-size: 13px;
+  transition: background 0.15s;
 }
 .dir-item:hover { background: var(--hover); }
 .stats-grid {
@@ -1280,9 +1292,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+  padding: 10px 4px;
+  background: var(--input-bg);
+  border-radius: 8px;
 }
-.stat-val { font-size: 22px; font-weight: 600; }
+.stat-val { font-size: 24px; font-weight: 700; line-height: 1; }
 .stat-val.ok { color: var(--accent); }
 .stat-val.bad { color: #e74c3c; }
 .stat-label { font-size: 11px; color: var(--muted); }
@@ -1290,28 +1305,30 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 260px;
+  max-height: 280px;
   overflow-y: auto;
 }
 .hist-row, .task-row {
   display: grid;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 5px;
+  padding: 8px 10px;
+  border-radius: 6px;
   background: var(--input-bg);
   font-size: 12px;
+  align-items: center;
 }
 .hist-row {
-  grid-template-columns: 120px 1fr 1fr;
+  grid-template-columns: 110px 1fr auto;
 }
-.hist-time { color: var(--muted); }
+.hist-time { color: var(--muted); white-space: nowrap; }
 .hist-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-msg { text-align: right; white-space: nowrap; }
 .hist-msg.ok { color: var(--accent); }
 .hist-msg.bad { color: #e74c3c; }
-.task-row { grid-template-columns: 1fr auto auto; }
+.task-row { grid-template-columns: 1fr auto auto; gap: 12px; }
 .task-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-size, .task-status { color: var(--muted); white-space: nowrap; }
-.empty { color: var(--muted); font-size: 13px; text-align: center; padding: 14px 0; }
+.task-size, .task-status { color: var(--muted); white-space: nowrap; font-size: 11px; }
+.empty { color: var(--muted); font-size: 13px; text-align: center; padding: 20px 0; }
 button.c115 {
   background: linear-gradient(135deg, #667eea, #764ba2);
   color: #fff;
@@ -1326,5 +1343,5 @@ button.c115:hover { opacity: 0.9; }
   .cloud115-layout { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .hist-row { grid-template-columns: 100px 1fr; }
-  .hist-msg { grid-column: 1 / -1; }
+  .hist-msg { grid-column: 1 / -1; text-align: left; }
 }

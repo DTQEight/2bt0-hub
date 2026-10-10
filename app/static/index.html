@@ -90,7 +90,7 @@
     <section id="cloud115-view" hidden>
       <div class="cloud115-layout">
         <div class="cloud115-left">
-          <div class="card config-card">
+          <div class="panel config-panel">
             <h3>115 配置</h3>
             <label class="field">
               <span>Cookie</span>
@@ -114,17 +114,19 @@
           </div>
         </div>
         <div class="cloud115-right">
-          <div class="card stats-card">
+          <div class="panel stats-panel">
             <h3>转存统计</h3>
             <div id="c115-stats" class="stats-grid">加载中…</div>
           </div>
-          <div class="card history-card">
+          <div class="panel history-panel">
             <h3>最近转存记录</h3>
             <div id="c115-history" class="history-list">加载中…</div>
           </div>
-          <div class="card tasks-card">
-            <h3>115 离线任务</h3>
-            <button type="button" id="c115-refresh-tasks">刷新</button>
+          <div class="panel tasks-panel">
+            <div class="panel-head">
+              <h3>115 离线任务</h3>
+              <button type="button" id="c115-refresh-tasks" class="btn-sm">刷新</button>
+            </div>
             <div id="c115-tasks" class="task-list">加载中…</div>
           </div>
         </div>
