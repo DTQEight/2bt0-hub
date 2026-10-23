@@ -43,6 +43,7 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "sort-select", "sort-by",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
+  "api-card",
   "sync-badge", "sync-badge-text", "sync-stop", "toast",
   "cloud115-view",
   "c115-cookie", "c115-save-cookie", "c115-verify", "c115-cookie-status",
@@ -158,6 +159,7 @@ function activateTab() {
     stopLogPolling();
     if (tab === "sync") {      refreshSyncUI(false); // 立即渲染 + 启动轮询
       loadSchedule();
+      loadApiKey();
     } else {
       applySearchbar();
       load();
@@ -1223,8 +1225,44 @@ async function saveSchedule(patch) {
   }
 }
 
-function renderSyncPage(s, m) {
-  el["sync-grid"].innerHTML =
+// ---- 对外 API 密钥（「同步」页展示，供调用 /api/magnets 取磁力）----
+// 只显示局域网/本机可读；公网访问会 403，此时只提示"仅局域网可见"。
+async function loadApiKey() {
+  const box = el["api-card"];
+  if (!box) return;
+  let data = null;
+  try {
+    const res = await fetch("/api/apikey");
+    data = await res.json();
+    if (!res.ok) data = { error: data.detail || `HTTP ${res.status}` };
+  } catch (e) {
+    data = { error: e.message };
+  }
+  if (data.error) {
+    box.innerHTML = `<div class="panel api-panel">
+        <h3>对外 API</h3>
+        <p class="api-hint">密钥仅在局域网内可查看：${escapeHtml(data.error)}</p>
+      </div>`;
+    return;
+  }
+  box.innerHTML = `<div class="panel api-panel">
+      <h3>对外 API</h3>
+      <p class="api-hint">按影片取磁力：<code>GET /api/magnets?movie_id=&lt;id&gt;[&amp;quality=1080P蓝光]</code></p>
+      <div class="api-row">
+        <span class="api-label">密钥</span>
+        <code class="api-key" id="api-key-value">${escapeHtml(data.api_key)}</code>
+        <button type="button" class="act" id="api-key-copy">复制</button>
+      </div>
+      <p class="api-hint">
+        带请求头 <code>X-API-Key</code> 调用；末尾加 <code>&amp;format=magnets</code>
+        可让接口直接返回「一行一条磁力链接」的纯文本，方便喂给下载器。
+      </p>
+    </div>`;
+  box.querySelector("#api-key-copy").addEventListener("click",
+    () => copyText(data.api_key));
+}
+
+function renderSyncPage(s, m) {  el["sync-grid"].innerHTML =
     syncCardHtml(1, s, m) + syncCardHtml(2, s, m) + statsCardHtml(s);
   // 绑定按钮事件（innerHTML 重建后需重绑）
   for (const btn of el["sync-grid"].querySelectorAll("[data-full]")) {

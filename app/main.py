@@ -12,12 +12,15 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from db import (filter_options, get_movie, get_sync_progress, init_db, query_groups,
-                query_items, quality_counts, upsert_items)
+from api_auth import api_key_for_admin, get_api_key, require_api_key
+from db import (filter_options, get_movie, get_sync_progress, init_db,
+                magnet_by_hash, magnets_for_movie, query_groups, query_items,
+                quality_counts, upsert_items)
+import quality
 from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
@@ -50,6 +53,8 @@ logging.basicConfig(
 logger = logging.getLogger("resource-hub")
 
 init_db()  # 本地磁力库建表
+# 对外 API 密钥：首次启动生成并打印一次到日志（之后从库里读，不重复打印）
+get_api_key()
 
 
 def _auto_resume() -> None:
@@ -282,6 +287,91 @@ async def movie_version_qualities(idcode: str) -> dict:
             "total": sum(counts.values())}
 
 
+# ---- 对外 API：按影片取磁力（需 API 密钥）----
+
+@app.get("/api/apikey")
+async def apikey_view(request: Request) -> dict:
+    """查看调用 /api/magnets 用的密钥（仅局域网/本机可读）。"""
+    return api_key_for_admin(request)
+
+
+@app.get("/api/magnets", dependencies=[Depends(require_api_key)])
+async def api_magnets(
+    movie_id: str = Query("", max_length=30, description="影片 idcode（豆瓣 subject id）"),
+    info_hash: str = Query("", max_length=40, description="直接按种子 info_hash 取单条"),
+    quality_bucket: str = Query("", alias="quality", max_length=20,
+                                description="只取某画质桶，如 1080P蓝光"),
+    limit: int = Query(200, ge=1, le=1000, description="最多返回条数"),
+    offset: int = Query(0, ge=0, description="跳过前 N 条（配合 limit 分页）"),
+    format: str = Query("json", pattern="^(json|text|magnets)$",
+                        description="json=带元数据；text=一行一条磁力；magnets=只输出 magnet 链接"),
+) -> Response:
+    """按影片或 info_hash 取磁力链接（自动化/脚本用）。
+
+    调用方式：
+        curl -H "X-API-Key: <密钥>" "http://<host>:8000/api/magnets?movie_id=35627661"
+        curl -H "X-API-Key: <密钥>" "...&quality=1080P蓝光&format=text"
+
+    返回（format=json）：
+        {"movie_id": ..., "movie_title": ..., "total": 12, "returned": 12,
+         "magnets": [{"info_hash","magnet","title","size","published_at",
+                      "category","detail_url","quality"}]}
+
+    format=text / magnets 时返回纯文本，一行一条磁力链接，便于直接喂给下载器；
+    total 等元数据通过响应头 X-Total-Count / X-Returned-Count 返回。
+    """
+    if not movie_id and not info_hash:
+        raise HTTPException(status_code=400, detail="需指定 movie_id 或 info_hash")
+    if quality_bucket and quality_bucket not in quality.BUCKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知画质桶 {quality_bucket}，可选：{' / '.join(quality.BUCKETS)}")
+
+    if info_hash:
+        # 单条：info_hash 唯一，按主键等值查询
+        rows, total = await asyncio.to_thread(_magnets_for_hash, info_hash, quality_bucket)
+        movie = None
+    else:
+        rows, total = await asyncio.to_thread(
+            magnets_for_movie, movie_id, quality_bucket, limit, offset)
+        movie = await asyncio.to_thread(get_movie, movie_id)
+
+    items = [{
+        "info_hash": r["info_hash"], "magnet": r["magnet"], "title": r["title"],
+        "size": r["size"], "published_at": r["published_at"],
+        "category": r["category"], "detail_url": r["detail_url"],
+        "quality": quality.classify(r["title"]),
+    } for r in rows if r["magnet"]]
+
+    if format in ("text", "magnets"):
+        body = "\n".join(i["magnet"] for i in items)
+        if format == "text" and movie:
+            # 首行注释掉，纯 magnets 格式不加，方便直接管道给下载器
+            body = f"# {movie['title'] or movie_id} ({len(items)}/{total} 条)\n" + body
+        return PlainTextResponse(
+            body + ("\n" if body else ""),
+            headers={"X-Total-Count": str(total), "X-Returned-Count": str(len(items))})
+
+    return {
+        "movie_id": movie_id,
+        "movie_title": (movie["title"] if movie else "") or (items[0]["title"] if items else ""),
+        "quality": quality_bucket,
+        "total": total,
+        "returned": len(items),
+        "magnets": items,
+    }
+
+
+def _magnets_for_hash(info_hash: str, quality_bucket: str = ""):
+    """按 info_hash 精确取单条磁力；带 quality 时要求该条也属于该桶。"""
+    row = magnet_by_hash(info_hash)
+    if not row:
+        return [], 0
+    if quality_bucket and quality.classify(row["title"]) != quality_bucket:
+        return [], 0
+    return [row], 1
+
+
 # ---- 影片详情批量拉取 ----
 
 @app.post("/api/movies/start")
@@ -404,16 +494,10 @@ async def cloud115_set_save_path(body: dict) -> dict:
 
 
 def _magnets_by_movie(movie_id: str) -> list[dict]:
-    """取某部影片的全部版本磁力，返回 [{info_hash, magnet, title}]"""
-    rows, _ = query_items(movie_id=movie_id, page_size=10000)
-    out = []
-    for r in rows:
-        mag = r["magnet"] if isinstance(r, dict) else r["magnet"]
-        ih = r["info_hash"] if isinstance(r, dict) else r["info_hash"]
-        title = r["movie_title"] or r["title"] if isinstance(r, dict) else r["movie_title"]
-        if mag:
-            out.append({"info_hash": ih, "magnet": mag, "title": title})
-    return out
+    """取某部影片的全部版本磁力，返回 [{info_hash, magnet, title}]（115 转存用）"""
+    rows, _ = magnets_for_movie(movie_id, limit=10000)
+    return [{"info_hash": r["info_hash"], "magnet": r["magnet"], "title": r["title"]}
+            for r in rows if r["magnet"]]
 
 
 @app.post("/api/115/transfer")

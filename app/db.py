@@ -319,6 +319,49 @@ def quality_counts(movie_id: str) -> dict[str, int]:
     return {b: got[b] for b in quality.BUCKETS if got.get(b)}
 
 
+def magnets_for_movie(movie_id: str, quality_bucket: str = "",
+                      limit: int = 200, offset: int = 0):
+    """取某部影片的磁力版本（对外开放 API 与 115 转存共用）。
+
+    quality_bucket 非空时只返回该画质桶（见 quality.py），过滤走 SQL 里注册的
+    quality_bucket() 函数，只扫这部影片的行（走 idx_magnets_movie_group）。
+    返回 (rows, total)，rows 按入库先后倒序。
+    """
+    if not movie_id:
+        return [], 0
+    conds, params = ["movie_id = ?"], [movie_id]
+    if quality_bucket:
+        conds.append("quality_bucket(title) = ?")
+        params.append(quality_bucket)
+    where = " AND ".join(conds)
+    with _db() as conn:
+        if quality_bucket:
+            _register_quality(conn)
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM magnets WHERE {where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT info_hash, magnet, title, size, published_at, category,"
+            f"       torrent_name, detail_url"
+            f"  FROM magnets WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            [*params, max(1, limit), max(0, offset)]).fetchall()
+    return rows, total
+
+
+def magnet_by_hash(info_hash: str):
+    """按 info_hash 精确取单条磁力（唯一键，返回一行或 None）。
+
+    对外开放 API 用；info_hash 统一小写比对（入库时已小写）。
+    """
+    h = (info_hash or "").strip().lower()
+    if not h:
+        return None
+    with _db() as conn:
+        return conn.execute(
+            "SELECT info_hash, magnet, title, size, published_at, category,"
+            "       torrent_name, detail_url FROM magnets WHERE info_hash = ?",
+            (h,)).fetchone()
+
+
 def query_items(page: int = 1, keyword: str = "", category: str = "",
                 movie_id: str = "", page_size: int = 20, quality_bucket: str = ""):
     """查询本地库（按入库先后倒序）。

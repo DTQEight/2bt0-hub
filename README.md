@@ -17,6 +17,7 @@
 - **影片资料**：片名、原名、别名、年份、上映日期、类型、地区、语言、片长、豆瓣/IMDB 评分、导演、编剧、主演、剧情简介
 - **海报本地化**：拉影片详情时把图床海报下载到 `DATA_DIR/posters`，由 `/posters/{文件名}` 提供，图床限流或下线也不影响浏览；扩展名按图片真实字节判断（图床会把 WebP 当 `image/png` 返回）
 - **每日定时增量**：到点自动对电影、电视剧依次追新，每个板块跑完自动跟进该板块的新片详情（海报/评分），开关与时间可在网页修改
+- **对外取磁力 API**：`GET /api/magnets` 按影片或 info_hash 取磁力，可按画质筛、可分页，支持 JSON / 纯文本 / 一行一条磁力链接三种输出，供脚本与下载器直接调用；带 API 密钥鉴权（密钥在「同步」页底部可查），见下文「对外 API：取磁力」
 - **手动备份**：需要还原点时用 `VACUUM INTO` 生成紧凑快照（保留最近 7 份），不做每日自动备份（每日新增仅 1~2 MB，一份快照却有 640 MB）
 - **终端风格日志页**：5 秒自动刷新、自动滚底、ERROR/WARNING 着色
 - **深色主题**：顶部 5 个 Tab（电影 / 电视剧 / 本地磁力库 / 日志 / 同步），列表数据全部来自本地库，不再在线浏览站点列表
@@ -153,6 +154,8 @@ app/
 | GET | `/api/filters` | 筛选条可选项（`category` 可选）：只返回本地库确实有数据的标签 |
 | GET | `/api/movie/{idcode}` | 影片详情 |
 | GET | `/api/movie/{idcode}/versions/qualities` | 该影片各画质桶的版本数（详情页磁力筛选条；只返回有货的桶） |
+| GET | `/api/magnets` | **对外取磁力（需 API 密钥）**：按 `movie_id` 或 `info_hash` 取，可带 `quality`、`limit`、`offset`、`format`，详见下节 |
+| GET | `/api/apikey` | 查看 `/api/magnets` 用的密钥（仅局域网/本机可读） |
 | GET | `/posters/{文件名}` | 本地缓存的海报图（未缓存返回 404，前端回落图床） |
 | POST | `/api/sync/start` | 启动同步（`section`、`mode`、`start_page`、`workers`） |
 | GET | `/api/sync/status` | 同步状态（进度、速度、ETA） |
@@ -164,6 +167,37 @@ app/
 | GET | `/api/logs` | 读取日志尾部（`lines`） |
 
 接口文档：`/api/docs`
+
+## 对外 API：取磁力
+
+给脚本/下载器用的接口，**必须带 API 密钥**（服务默认只绑 127.0.0.1，但经 portproxy 可被局域网访问，不鉴权等于把 82 万条磁力公开）。
+
+密钥在首次启动时自动生成并写进日志，也可在网页「同步」页最下方直接查看复制，或 `GET /api/apikey`（仅局域网/本机可读）：
+
+```bash
+# 取某部影片的全部磁力（JSON，带画质标签）
+curl -H "X-API-Key: <密钥>" "http://<host>:8000/api/magnets?movie_id=36934908"
+
+# 只要 1080P 蓝光的，且直接输出磁力链接纯文本（一行一条，便于管道给下载器）
+curl -H "X-API-Key: <密钥>" \
+  "http://<host>:8000/api/magnets?movie_id=36934908&quality=1080P蓝光&format=magnets" \
+  > links.txt
+
+# 按 info_hash 取单条
+curl -H "X-API-Key: <密钥>" "http://<host>:8000/api/magnets?info_hash=<40位hash>"
+```
+
+参数：
+
+| 参数 | 说明 |
+|---|---|
+| `movie_id` / `info_hash` | 二选一（都传时以 `info_hash` 为准）；前者取整片版本，后者取单条 |
+| `quality` | 只取某画质桶：`3D`/`杜比视界`/`4K蓝光原盘`/`蓝光原盘`/`4K-Remux`/`1080P-Remux`/`4K蓝光`/`1080P蓝光`/`WEB-4K`/`WEB-1080P`/`HDTV`/`1080P`/`720P`/`标清`/`枪版`/`其他`；非法值返回 400 并列出可选值 |
+| `limit` / `offset` | 分页，默认 200 / 0，`limit` 上限 1000 |
+| `format` | `json`（默认，带 info_hash/大小/日期/画质等元数据）、`text`（纯文本带一行注释头）、`magnets`（纯磁力链接，一行一条） |
+
+`format=text|magnets` 时返回 `text/plain`，总数在响应头 `X-Total-Count` / `X-Returned-Count` 里。
+密钥也可用 `?key=<密钥>` 传（方便浏览器直接点开验证），但会留在访问日志，正式集成建议用请求头。
 
 ## 说明
 
