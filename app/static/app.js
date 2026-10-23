@@ -21,6 +21,36 @@ const state = {
   prevRunning: false,
 };
 
+// ---- 全站鉴权：网页自己也带 API 密钥 ----
+// 后端对所有 /api/* 校验 X-API-Key（健康检查与查看密钥除外）。网页不豁免，
+// 所以在最前面包一层 fetch：凡是同源 /api/ 请求自动补上密钥。
+// 密钥从 /api/apikey 取（仅局域网/本机可读），只取一次并缓存；取不到时原样发请求，
+// 由各调用方按 401 处理（页面会显示"加载失败：缺少 API 密钥…"）。
+let apiKeyPromise = null;
+function apiKey() {
+  if (!apiKeyPromise) {
+    apiKeyPromise = fetch("/api/apikey")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => (d && d.api_key) || "")
+      .catch(() => "");
+  }
+  return apiKeyPromise;
+}
+
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  // /api/apikey 自身不能再走这段，否则递归
+  if (!url.startsWith("/api/") || url.startsWith("/api/apikey")) {
+    return nativeFetch(input, init);
+  }
+  const key = await apiKey();
+  if (!key) return nativeFetch(input, init);
+  const headers = new Headers(init.headers || {});
+  headers.set("X-API-Key", key);
+  return nativeFetch(input, { ...init, headers });
+};
+
 // 三个列表 Tab 都读本地库：电影/电视剧按板块看片名海报墙，本地磁力库看全部版本
 const TABS = {
   movie: { category: "电影", view: "groups", hint: "搜片名/原名/别名/演员/导演/hash…" },

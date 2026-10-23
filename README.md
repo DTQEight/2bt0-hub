@@ -17,7 +17,7 @@
 - **影片资料**：片名、原名、别名、年份、上映日期、类型、地区、语言、片长、豆瓣/IMDB 评分、导演、编剧、主演、剧情简介
 - **海报本地化**：拉影片详情时把图床海报下载到 `DATA_DIR/posters`，由 `/posters/{文件名}` 提供，图床限流或下线也不影响浏览；扩展名按图片真实字节判断（图床会把 WebP 当 `image/png` 返回）
 - **每日定时增量**：到点自动对电影、电视剧依次追新，每个板块跑完自动跟进该板块的新片详情（海报/评分），开关与时间可在网页修改
-- **对外取磁力 API**：`GET /api/magnets` 按影片或 info_hash 取磁力，可按画质筛、可分页，支持 JSON / 纯文本 / 一行一条磁力链接三种输出，供脚本与下载器直接调用；带 API 密钥鉴权（密钥在「同步」页底部可查），见下文「对外 API：取磁力」
+- **对外 API（供其他应用接入）**：全部 `/api/*` 用一把 API 密钥鉴权，外部脚本/App 带上 `X-API-Key` 即可调用全部功能——搜索影片、影片元数据、按画质取磁力（JSON / 纯文本 / 一行一条磁力链接）、启动同步、转存 115。密钥在「同步」页底部可查，接入示例见下文「其他应用接入」
 - **手动备份**：需要还原点时用 `VACUUM INTO` 生成紧凑快照（保留最近 7 份），不做每日自动备份（每日新增仅 1~2 MB，一份快照却有 640 MB）
 - **终端风格日志页**：5 秒自动刷新、自动滚底、ERROR/WARNING 着色
 - **深色主题**：顶部 5 个 Tab（电影 / 电视剧 / 本地磁力库 / 日志 / 同步），列表数据全部来自本地库，不再在线浏览站点列表
@@ -146,17 +146,21 @@ app/
 
 ## API
 
+**所有 `/api/*` 都需要 API 密钥**（下面的清单省略了这个共同前提），只有
+`/api/health`、`/api/apikey`、`/api/docs`、`/api/openapi.json` 豁免。
+调用方在请求头带 `X-API-Key: <密钥>`；网页端由前端自动补上，无需手动填。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 健康检查 |
+| GET | `/api/health` | 健康检查（无需密钥，容器 healthcheck 用它） |
 | GET | `/api/items` | 抓取/浏览条目（`source`、`sc`、`q`、`page`、`category`、`movie_id`、`quality`） |
 | GET | `/api/groups` | 本地库按片名分组（海报墙）：`q`、`person`（人名精确筛选）、`category`、`sort`、`page`；筛选 `ftype`/`farea`/`fyears`/`fquality`/`ftag`/`votes_min`/`score_min`/`score_max`/`imdb_only` |
 | GET | `/api/filters` | 筛选条可选项（`category` 可选）：只返回本地库确实有数据的标签 |
 | GET | `/api/movie/{idcode}` | 影片详情 |
 | GET | `/api/movie/{idcode}/versions/qualities` | 该影片各画质桶的版本数（详情页磁力筛选条；只返回有货的桶） |
-| GET | `/api/magnets` | **对外取磁力（需 API 密钥）**：按 `movie_id` 或 `info_hash` 取，可带 `quality`、`limit`、`offset`、`format`，详见下节 |
-| GET | `/api/apikey` | 查看 `/api/magnets` 用的密钥（仅局域网/本机可读） |
-| GET | `/posters/{文件名}` | 本地缓存的海报图（未缓存返回 404，前端回落图床） |
+| GET | `/api/magnets` | 取磁力：按 `movie_id` 或 `info_hash`，可带 `quality`、`limit`、`offset`、`format`，详见下节 |
+| GET | `/api/apikey` | 查看密钥（无需密钥，但**仅局域网/本机**可读） |
+| GET | `/posters/{文件名}` | 本地缓存的海报图（不在 `/api` 下，无需密钥；未缓存返回 404，前端回落图床） |
 | POST | `/api/sync/start` | 启动同步（`section`、`mode`、`start_page`、`workers`） |
 | GET | `/api/sync/status` | 同步状态（进度、速度、ETA） |
 | POST | `/api/sync/stop` | 停止同步 |
@@ -165,26 +169,43 @@ app/
 | POST | `/api/movies/stop` | 停止影片拉取 |
 | GET / POST | `/api/schedule` | 读取 / 修改每日定时增量配置 |
 | GET | `/api/logs` | 读取日志尾部（`lines`） |
+| POST | `/api/115/transfer` | 转存磁力到 115（`magnet` / `info_hash` / `movie_id` 三选一） |
 
-接口文档：`/api/docs`
+其余 `/api/115/*` 接口见 `/api/docs`。
 
-## 对外 API：取磁力
+接口文档：`/api/docs`（Swagger UI）。注意「Try it out」不会自动带密钥，调试请用下面的 curl 示例。
 
-给脚本/下载器用的接口，**必须带 API 密钥**（服务默认只绑 127.0.0.1，但经 portproxy 可被局域网访问，不鉴权等于把 82 万条磁力公开）。
+## 其他应用接入
 
-密钥在首次启动时自动生成并写进日志，也可在网页「同步」页最下方直接查看复制，或 `GET /api/apikey`（仅局域网/本机可读）：
+**一把钥匙调全部功能**：这把密钥对 `/api/*` 全站生效，注意它等于全部权限——包括
+启停同步、改定时任务、以及**用你的 115 账号转存任意磁力**。所以：
+- 只发给可信的应用/脚本，不要贴进公开仓库或前端网页源码；
+- 服务一旦暴露到公网，持钥匙者即可完全控制；建议保持只在局域网内使用（或配合反向代理再加一层认证）。
+
+密钥从哪来（三种方式，同一个值）：
+1. 网页「同步」页最底部「对外 API」卡片，可一键复制；
+2. `GET /api/apikey`（仅局域网/本机可读，公网访问返回 403）；
+3. 容器首次启动时日志里打印一次：`docker logs resource-hub | grep "API 密钥"`。
+
+> 网页端靠 `/api/apikey` 自动取密钥，所以**网页只适合在局域网/本机打开**。
+> 若哪天把服务挂到公网反向代理后面，`/api/apikey` 会 403，网页将无法加载数据
+> （API 本身仍可用，脚本带密钥即可）。
+
+### 取磁力（最常用）
 
 ```bash
+KEY=<你的密钥>
+
 # 取某部影片的全部磁力（JSON，带画质标签）
-curl -H "X-API-Key: <密钥>" "http://<host>:8000/api/magnets?movie_id=36934908"
+curl -H "X-API-Key: $KEY" "http://<host>:8000/api/magnets?movie_id=36934908"
 
 # 只要 1080P 蓝光的，且直接输出磁力链接纯文本（一行一条，便于管道给下载器）
-curl -H "X-API-Key: <密钥>" \
+curl -H "X-API-Key: $KEY" \
   "http://<host>:8000/api/magnets?movie_id=36934908&quality=1080P蓝光&format=magnets" \
   > links.txt
 
 # 按 info_hash 取单条
-curl -H "X-API-Key: <密钥>" "http://<host>:8000/api/magnets?info_hash=<40位hash>"
+curl -H "X-API-Key: $KEY" "http://<host>:8000/api/magnets?info_hash=<40位hash>"
 ```
 
 参数：
@@ -198,6 +219,44 @@ curl -H "X-API-Key: <密钥>" "http://<host>:8000/api/magnets?info_hash=<40位ha
 
 `format=text|magnets` 时返回 `text/plain`，总数在响应头 `X-Total-Count` / `X-Returned-Count` 里。
 密钥也可用 `?key=<密钥>` 传（方便浏览器直接点开验证），但会留在访问日志，正式集成建议用请求头。
+
+### 搜索 / 元数据
+
+```bash
+# 按片名搜索影片（海报墙同款分组结果：片名、年份、评分、版本数、海报地址）
+curl -H "X-API-Key: $KEY" "http://<host>:8000/api/groups?q=因果报应&category=电影"
+#   → {"groups":[{"movie_id":"36934908","title":"因果报应","years":"2024",
+#                 "doub_score":"8.4","versions":19,"image":"/posters/..."}], ...}
+
+# 影片完整元数据（原名/别名/导演/主演/地区/语言/上映/豆瓣 IMDb/简介…）
+curl -H "X-API-Key: $KEY" "http://<host>:8000/api/movie/36934908"
+
+# 该片有哪些画质、各有几个版本（先看再决定筛哪个）
+curl -H "X-API-Key: $KEY" "http://<host>:8000/api/movie/36934908/versions/qualities"
+#   → {"qualities":[{"name":"WEB-4K","count":12},{"name":"WEB-1080P","count":7}],"total":19}
+
+# 分页浏览本地库（source=local），或用 ?q= 关键词搜种子名/hash
+curl -H "X-API-Key: $KEY" "http://<host>:8000/api/items?source=local&page=1&q=Maharaja"
+```
+
+`image` / 海报字段本地命中时是 `/posters/xxx.webp`（拼接主机地址即可），未缓存时是图床外链。
+
+### 控制同步与 115 转存
+
+```bash
+# 触发电视剧增量更新（要求该板块已完成全量同步）
+curl -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"section":2,"mode":"update"}' "http://<host>:8000/api/sync/start"
+
+# 查询同步进度（running/板块/页码/速度/ETA）
+curl -H "X-API-Key: $KEY" "http://<host>:8000/api/sync/status"
+
+# 把某部影片的全部版本转存到 115（目标目录取「115 转存」页里选定的默认目录）
+curl -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"movie_id":"36934908"}' "http://<host>:8000/api/115/transfer"
+```
+
+`POST` 接口都要求 `Content-Type: application/json`。
 
 ## 说明
 

@@ -13,10 +13,11 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from api_auth import api_key_for_admin, get_api_key, require_api_key
+from api_auth import (api_key_for_admin, get_api_key, is_public_api_path,
+                      require_api_key)
 from db import (filter_options, get_movie, get_sync_progress, init_db,
                 magnet_by_hash, magnets_for_movie, query_groups, query_items,
                 quality_counts, upsert_items)
@@ -103,6 +104,24 @@ async def static_no_cache(request, call_next):
     if path == "/" or path.startswith("/static/"):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+@app.middleware("http")
+async def api_key_guard(request, call_next):
+    """全站 API 密钥校验：所有 /api/* 都要带 X-API-Key，只有这几类豁免——
+    /api/health（容器 healthcheck 依赖）、/api/apikey（查看密钥本身）、
+    /api/docs 与 /api/openapi.json（文档）。
+
+    用中间件而不是逐个路由加依赖：新增接口自动受保护，不会有人漏加。
+    网页自己不豁免，而是由 app.js 自动带上密钥（见 static/app.js 顶部）。
+    """
+    path = request.url.path
+    if path.startswith("/api/") and not is_public_api_path(path):
+        try:
+            require_api_key(request)
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return await call_next(request)
 
 
 @app.get("/api/health")
