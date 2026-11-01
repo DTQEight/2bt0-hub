@@ -18,15 +18,15 @@ from fastapi.staticfiles import StaticFiles
 
 from api_auth import (api_key_for_admin, get_api_key, is_public_api_path,
                       require_api_key)
-from db import (filter_options, get_movie, get_sync_progress, init_db,
-                magnet_by_hash, magnets_for_movie, query_groups, query_items,
-                quality_counts, upsert_items)
+from db import (filter_options, get_movie, get_setting, get_sync_progress,
+                init_db, magnet_by_hash, magnets_for_movie, query_groups,
+                query_items, quality_counts, set_setting, upsert_items)
 import quality
 from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
-from sources.bt0 import SECTIONS
+from sources.bt0 import SECTIONS, get_cookie, set_cookie
 from sync import sync_manager
 import cloud115
 import transfer_history
@@ -90,6 +90,8 @@ if get_sync_progress("bt0"):
 threading.Thread(target=migrate_to_shards, name="poster-migrate", daemon=True).start()
 
 start_scheduler()  # 每日定时增量更新（电影 + 电视剧）
+# WAF Cookie：网页「同步」页保存过的值优先，未设置时回落到环境变量 BT0_COOKIE
+set_cookie(get_setting("bt0.cookie", ""))
 
 app = FastAPI(title="2bt0 资源库", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
@@ -438,6 +440,30 @@ async def schedule_set(body: dict) -> dict:
     logger.info("定时任务配置已更新：%s，每天 %02d:00",
                 "已开启" if cfg["enabled"] else "已关闭", cfg["hour"])
     return _schedule_payload(cfg)
+
+
+@app.get("/api/bt0cookie")
+async def bt0_cookie_view() -> dict:
+    """当前生效的 2bt0 WAF 验证 Cookie（只回掩码，不回明文）"""
+    active = get_cookie()
+    saved = get_setting("bt0.cookie", "")
+    source = "网页设置" if saved else ("环境变量" if active else "")
+    masked = ""
+    if active:
+        masked = (active[:6] + "****" + active[-6:]) if len(active) > 20 else "****"
+    return {"has_cookie": bool(active), "cookie_masked": masked, "source": source}
+
+
+@app.post("/api/bt0cookie")
+async def bt0_cookie_set(body: dict) -> dict:
+    """保存 2bt0 WAF 验证 Cookie（存 settings 表），立即生效、无需重启"""
+    cookie = (body.get("cookie") or "").strip()
+    if not cookie:
+        raise HTTPException(status_code=400, detail="Cookie 不能为空")
+    set_setting("bt0.cookie", cookie)
+    set_cookie(cookie)
+    logger.info("2bt0 WAF Cookie 已更新（网页设置，立即生效）")
+    return {"success": True, "message": "Cookie 已保存并立即生效"}
 
 
 @app.get("/api/logs")

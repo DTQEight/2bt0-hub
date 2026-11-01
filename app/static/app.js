@@ -73,7 +73,7 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "sort-select", "sort-by",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
-  "api-card",
+  "api-card", "waf-card",
   "sync-badge", "sync-badge-text", "sync-stop", "toast",
   "cloud115-view",
   "c115-cookie", "c115-save-cookie", "c115-verify", "c115-cookie-status",
@@ -190,6 +190,7 @@ function activateTab() {
     if (tab === "sync") {      refreshSyncUI(false); // 立即渲染 + 启动轮询
       loadSchedule();
       loadApiKey();
+      loadWafCookie();
     } else {
       applySearchbar();
       load();
@@ -1290,6 +1291,60 @@ async function loadApiKey() {
     </div>`;
   box.querySelector("#api-key-copy").addEventListener("click",
     () => copyText(data.api_key));
+}
+
+// ---- 2bt0 WAF 验证 Cookie（「同步」页设置；过期后在网页粘贴新 Cookie，立即生效）----
+// 只显示掩码，不回传明文；与 115 Cookie 的交互一致
+async function loadWafCookie() {
+  const box = el["waf-card"];
+  if (!box) return;
+  let data = {};
+  try {
+    const res = await fetch("/api/bt0cookie");
+    data = await res.json();
+    if (!res.ok) data = { error: data.detail || `HTTP ${res.status}` };
+  } catch (e) {
+    data = { error: e.message };
+  }
+  const status = data.error
+    ? escapeHtml(data.error)
+    : data.has_cookie
+      ? `已配置：<code>${escapeHtml(data.cookie_masked)}</code>` +
+        (data.source ? `（来源：${escapeHtml(data.source)}）` : "")
+      : "未配置（站点要求人机验证时，同步会被拦）";
+  box.innerHTML = `<div class="panel api-panel">
+      <h3>2bt0 WAF 验证 Cookie</h3>
+      <p class="api-hint">${status}</p>
+      <div class="api-row">
+        <span class="api-label">新 Cookie</span>
+        <input id="waf-cookie-input" type="password" autocomplete="off"
+               placeholder="形如 ge_wc_18=xxx" />
+        <button type="button" class="act" id="waf-cookie-save">保存</button>
+      </div>
+      <p class="api-hint">
+        同步日志出现「WAF 拦截」时：浏览器打开 2bt0.com 过一次滑块，
+        DevTools → Application → Cookies 复制验证 Cookie 粘贴到这里，
+        保存后立即生效、无需重启。
+      </p>
+    </div>`;
+  box.querySelector("#waf-cookie-save").addEventListener("click", saveWafCookie);
+}
+
+async function saveWafCookie() {
+  const input = el["waf-card"].querySelector("#waf-cookie-input");
+  try {
+    const res = await fetch("/api/bt0cookie", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cookie: input.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast(data.message || "Cookie 已保存");
+    loadWafCookie(); // 重渲染以显示新掩码与来源
+  } catch (err) {
+    showToast(`保存失败：${err.message}`);
+  }
 }
 
 function renderSyncPage(s, m) {  el["sync-grid"].innerHTML =

@@ -43,12 +43,32 @@ HEADERS = {
     "Origin": BASE,
 }
 
-# 站点 WAF 会对无人验证的客户端返回 307 跳人机验证页。浏览器里过一次滑块后，
+# 站点 WAF 会对未通过人机验证的客户端返回 307 跳验证页。浏览器里过一次滑块后，
 # WAF 下发验证 Cookie（如 ge_wc_18=...，实测不绑定 UA/TLS 指纹，普通 HTTP 客户端可复用）。
-# Cookie 会过期，过期后请求重新被 307，需在浏览器重新过验证并更新 BT0_COOKIE。
-WAF_COOKIE = os.environ.get("BT0_COOKIE", "").strip()
-if WAF_COOKIE:
-    HEADERS["Cookie"] = WAF_COOKIE
+# Cookie 会过期：过期后请求重新被 307，同步日志报「WAF 拦截」，在网页「同步」页
+# 粘贴新 Cookie 即可热生效（存 settings 表，优先于环境变量 BT0_COOKIE）。
+ENV_COOKIE = os.environ.get("BT0_COOKIE", "").strip()
+
+
+def set_cookie(cookie: str) -> str:
+    """设置 WAF 验证 Cookie（网页保存后调用，立即生效、无需重启）。
+
+    传空值回落到环境变量 BT0_COOKIE；两者都为空则不带 Cookie 头。
+    """
+    cookie = (cookie or "").strip() or ENV_COOKIE
+    if cookie:
+        HEADERS["Cookie"] = cookie
+    else:
+        HEADERS.pop("Cookie", None)
+    return cookie
+
+
+def get_cookie() -> str:
+    """当前生效的 WAF Cookie（可能来自网页设置或环境变量）"""
+    return HEADERS.get("Cookie", "")
+
+
+set_cookie("")  # 启动时先用环境变量兜底，网页设置过的值由 main.py 启动时覆盖
 
 # 板块代码 → 名称（与官网 /tlist/{sc}_{page}.html 一致；3/4/5 热门榜不抓）
 SECTIONS = {1: "电影", 2: "电视剧"}
@@ -70,7 +90,8 @@ def api_get(endpoint: str, params: dict) -> dict:
                 # WAF 拦截重试也不会过，直接给出可操作的错误、不进重试
                 raise SourceError(
                     "WAF 拦截：站点要求人机验证。在浏览器打开 2bt0.com 过一次滑块，"
-                    "把新 Cookie 填入 BT0_COOKIE 环境变量后重启容器")
+                    "把新 Cookie 粘贴到网页「同步」页的「WAF 验证 Cookie」卡片"
+                    "（或更新 BT0_COOKIE 环境变量），保存后可继续同步")
             try:
                 data = r.json()
             except ValueError as exc:

@@ -124,7 +124,7 @@ app/
 - 增量更新要求该板块已完成全量同步，否则后端返回 409
 - 4 线程并发抓取；同板块一页 20 条，一批写入
 - 站点 API 的 `total` 字段不可信（恒为 400），页数由「连续空页 + 多级探测」判定
-- 站点开启了 WAF 人机验证：接口请求被拦时同步日志会报「WAF 拦截」（不再笼统报「返回非 JSON」），在浏览器过一次滑块、把验证 Cookie 填入 `BT0_COOKIE` 重启即可，断点不受影响
+- 站点开启了 WAF 人机验证：接口请求被拦时同步日志会报「WAF 拦截」（不再笼统报「返回非 JSON」）。处理：在浏览器过一次滑块，把验证 Cookie 粘贴到「同步」页的「WAF 验证 Cookie」卡片，**立即生效、无需重启**；也可用 `BT0_COOKIE` 环境变量（网页设置的值优先）。断点不受影响
 - 顶部呼吸灯与「同步」页实时显示板块、页码、库内条数、速度与 ETA
 - 影片详情按板块并入电影/电视剧卡片：各自显示「已入库 / 待拉取」与独立进度条、速度、ETA 和「拉取详情」按钮；板块同步（全量/续抓/增量）跑完自动跟进本板块详情，详情跑完也会显示在顶栏呼吸灯上
 - 详情字段加了 `tags` / `definition` 之后，之前入库的影片算「待拉取」，需要在同步页点一次「拉取详情」重拉补齐（筛选条要靠这两个字段筛标签和画质）
@@ -144,7 +144,7 @@ app/
 | `DATA_DIR` | `/data` | 数据库、日志、备份、海报缓存的存放目录 |
 | `TZ` | 容器默认（UTC） | 时区，定时任务按此触发，务必设为 `Asia/Shanghai` |
 | `SYNC_HOUR` | `3` | 每日增量默认触发小时（0-23）；网页改过之后以数据库为准 |
-| `BT0_COOKIE` | 空 | 2bt0 站点 WAF 人机验证的 Cookie（形如 `ge_wc_18=xxx`）。站点开启 WAF 后，无 Cookie 的接口请求会被 307 到验证页；在浏览器打开 2bt0.com 过一次滑块，再从 DevTools 的 Cookies 里把验证 Cookie 复制进来。Cookie 会过期：同步日志出现「WAF 拦截」时重新过验证并更新此值，`docker compose up -d` 重启生效 |
+| `BT0_COOKIE` | 空 | 2bt0 站点 WAF 人机验证的 Cookie（形如 `ge_wc_18=xxx`）的环境变量兜底。**推荐直接在网页「同步」页的「WAF 验证 Cookie」卡片里设置**（立即生效、可随时更新）；环境变量只在网页未设置时生效，适合 NAS 首次部署。Cookie 会过期：同步日志出现「WAF 拦截」时重新过验证并更新 |
 
 ## API
 
@@ -162,6 +162,7 @@ app/
 | GET | `/api/movie/{idcode}/versions/qualities` | 该影片各画质桶的版本数（详情页磁力筛选条；只返回有货的桶） |
 | GET | `/api/magnets` | 取磁力：按 `movie_id` 或 `info_hash`，可带 `quality`、`limit`、`offset`、`format`，详见下节 |
 | GET | `/api/apikey` | 查看密钥（无需密钥，但**仅局域网/本机**可读） |
+| GET / POST | `/api/bt0cookie` | 2bt0 WAF 验证 Cookie：GET 掩码展示当前生效值与来源，POST 保存（存 settings 表）并立即生效，无需重启 |
 | GET | `/posters/{文件名}` | 本地缓存的海报图（不在 `/api` 下，无需密钥；未缓存返回 404，前端回落图床） |
 | POST | `/api/sync/start` | 启动同步（`section`、`mode`、`start_page`、`workers`） |
 | GET | `/api/sync/status` | 同步状态（进度、速度、ETA） |
