@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import time
 
 import requests
@@ -42,6 +43,13 @@ HEADERS = {
     "Origin": BASE,
 }
 
+# 站点 WAF 会对无人验证的客户端返回 307 跳人机验证页。浏览器里过一次滑块后，
+# WAF 下发验证 Cookie（如 ge_wc_18=...，实测不绑定 UA/TLS 指纹，普通 HTTP 客户端可复用）。
+# Cookie 会过期，过期后请求重新被 307，需在浏览器重新过验证并更新 BT0_COOKIE。
+WAF_COOKIE = os.environ.get("BT0_COOKIE", "").strip()
+if WAF_COOKIE:
+    HEADERS["Cookie"] = WAF_COOKIE
+
 # 板块代码 → 名称（与官网 /tlist/{sc}_{page}.html 一致；3/4/5 热门榜不抓）
 SECTIONS = {1: "电影", 2: "电视剧"}
 
@@ -57,6 +65,12 @@ def api_get(endpoint: str, params: dict) -> dict:
                 timeout=(15, 45),
                 verify=False,  # 该站证书链不完整
             )
+            if "/WAF/VERIFY" in str(r.url):
+                # requests 会跟随 307 重定向，所以看最终 URL 是否落在验证页。
+                # WAF 拦截重试也不会过，直接给出可操作的错误、不进重试
+                raise SourceError(
+                    "WAF 拦截：站点要求人机验证。在浏览器打开 2bt0.com 过一次滑块，"
+                    "把新 Cookie 填入 BT0_COOKIE 环境变量后重启容器")
             try:
                 data = r.json()
             except ValueError as exc:

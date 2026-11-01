@@ -15,6 +15,8 @@ services:
     environment:
       DATA_DIR: /data
       TZ: "Asia/Shanghai"
+      # 2bt0 WAF 验证 Cookie，值在 .env 里维护（见 .env 内注释）
+      BT0_COOKIE: ${BT0_COOKIE:-}
       # 让 Python 的字节码缓存也落到 E 盘，不写容器可写层
       PYTHONPYCACHEPREFIX: /data/tmp/pycache
     volumes:
