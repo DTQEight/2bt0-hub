@@ -150,11 +150,26 @@ CREATE INDEX IF NOT EXISTS idx_people_name ON movie_people(name);
 --   (movie_id,id,movie_title) → 按片名分组浏览的 GROUP BY，以及"该片的全部版本"分页定位
 --                      （对 SELECT id 与 movie_title 都是覆盖索引）
 --   (category,movie_id,id,movie_title) → 按片名分组浏览（GROUP BY movie_id，带分类过滤）
--- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索是
--- LIKE '%kw%'（前置通配符无法走 B-tree 索引），也没有按 source 过滤的语句。
+-- 原先还有 title / source 两个索引，但现有查询用不上：关键词检索走 FTS5
+-- 虚拟表（见下），不再需要 B-tree 索引；也没有按 source 过滤的语句。
 -- 二者在 82 万行时占用约 93MB 并拖慢每行写入，故不再创建，并清理存量。
 DROP INDEX IF EXISTS idx_magnets_title;
 DROP INDEX IF EXISTS idx_magnets_source;
+"""
+
+# ---- FTS5 全文搜索虚拟表 ----
+# 用 trigram tokenizer（SQLite 3.50+ 内建，已验证可用），保证子串匹配；
+# content='xxx' + content_rowid='xxx' → SQLite 自动把主表行 id 映射成 FTS rowid，
+# 主表 upsert/delete 时 FTS 同步更新，不再需要 triggers。
+_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_magnets USING fts5(
+    title, torrent_name, movie_title, category,
+    content='magnets', content_rowid='id', tokenize='trigram'
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_movies USING fts5(
+    title, otitle, alias, director, performer,
+    content='movies', content_rowid='idcode', tokenize='trigram'
+);
 """
 
 
@@ -186,6 +201,123 @@ def init_db() -> None:
                 if rows:
                     filled = replace_people(conn, rows)
                     logger.info("演职人员表首次建立，从影片表现有字段回填 %d 条", filled)
+            # ---- FTS5 全文搜索虚拟表 ----
+            conn.executescript(_FTS)
+            # CONTENT 表创建时不会自动灌已有数据，触发 rebuild（一次性的，
+            # 82 万行 ~17s；靠 settings 标记避免每次启动都跑）
+            rebuilt = conn.execute(
+                "SELECT value FROM settings WHERE key='fts_rebuilt_v1'").fetchone()
+            if not rebuilt:
+                logger.info("FTS 索引首次 rebuild，可能耗时 10–25s …")
+                fts_start = time.monotonic()
+                conn.execute("INSERT INTO fts_magnets(fts_magnets) VALUES('rebuild')")
+                conn.execute("INSERT INTO fts_movies(fts_movies) VALUES('rebuild')")
+                conn.execute(
+                    "INSERT INTO settings(key, value, updated_at)"
+                    " VALUES('fts_rebuilt_v1','1',?)", (_now(),))
+                logger.info("FTS rebuild 完成，耗时 %.1fs", time.monotonic() - fts_start)
+
+
+# ---- FTS5 关键词辅助 ----
+
+def _fts_match_expr(kw: str) -> str:
+    """把用户关键词转成安全的 FTS5 MATCH 表达式。
+
+    - 去掉 FTS 保留字符（双引号 / 通配符 @ * - / 括号等）
+    - 按空白拆词
+    - trigram tokenizer 限制：
+        * 纯数字 token（"2024"）太泛——torrent_name 里年份命中几万行 → 丢弃
+        * ≤2 字 token（"诺兰"/单字）切不出 trigram 片段 → 丢弃
+    - 剩余 ≥3 字 token 用 OR 连接短语匹配
+    - 所有有效 token 都被过滤时返回 ""（调用方应让降级 LIKE 兜底）
+    """
+    if not kw or not kw.strip():
+        return ""
+    cleaned = re.sub(r'["*@\-()<>=~]', '', kw)
+    tokens = [t for t in re.split(r'\s+', cleaned) if t]
+    # trigram 能用的 token：非纯数字 + 长度 ≥3
+    tokens = [t for t in tokens
+              if not re.fullmatch(r'\d+', t) and len(t) >= 3]
+    if not tokens:
+        return ""
+    return " OR ".join(f'"{t}"' for t in tokens)
+
+
+def _fts_lookup(conn, kw: str) -> tuple[list[int], list[str]]:
+    """FTS5 搜两个表，返回 (magnets_rowids, movie_ids)。
+
+    rowids 是 magnets.id（INT），走 PRIMARY KEY 索引；
+    movie_ids 是 movies.idcode（TEXT），走 magnets.movie_id 索引。
+    任一查询异常都降级返回空列表，不让 FTS 故障击穿主查询。
+
+    trigram tokenizer 对关键词长度有要求（中文 ≤2 字切不出完整片段、空格拆分
+    出的单字短语也无效），任何 FTS 无命中 + kw 非空的情况都降级 movies 表 LIKE——
+    扫 movies 93K 行约 150ms，远好于扫 magnets 825K 行全扫。
+    """
+    expr = _fts_match_expr(kw)
+    rowids, movie_ids = [], []
+    if expr:
+        try:
+            rowids = [r[0] for r in conn.execute(
+                "SELECT rowid FROM fts_magnets WHERE fts_magnets MATCH ?", (expr,)).fetchall()]
+        except sqlite3.OperationalError as e:
+            logger.warning("fts_magnets 查询失败: %s", e)
+        try:
+            movie_ids = [str(r[0]) for r in conn.execute(
+                "SELECT rowid FROM fts_movies WHERE fts_movies MATCH ?", (expr,)).fetchall()]
+        except sqlite3.OperationalError as e:
+            logger.warning("fts_movies 查询失败: %s", e)
+    # 降级：FTS 无命中 + kw 非空 + 不是纯 hex
+    # （纯 hex 用户意图搜 hash，movies 表不会有 hash 值，降级 LIKE 白扫 93K 行）
+    # trigram tokenizer 的盲区：短词、空格拆分成的单字、以及其他 tokenizer 限制的情况都能覆盖
+    # 中间空格也去掉（用户输"诺  兰"应该命中"诺兰"）
+    stripped = kw.strip()
+    is_hex = bool(re.fullmatch(r'[0-9a-fA-F]+', stripped))
+    if stripped and not is_hex and not rowids and not movie_ids:
+        compact = re.sub(r'\s+', '', stripped)
+        if compact:
+            like_kw = f"%{compact}%"
+        try:
+            fallback = [str(r[0]) for r in conn.execute(
+                "SELECT idcode FROM movies WHERE otitle LIKE ? OR alias LIKE ?"
+                " OR performer LIKE ? OR director LIKE ?",
+                [like_kw] * 4).fetchall()]
+            movie_ids = list(set(movie_ids + fallback))
+        except sqlite3.OperationalError as e:
+            logger.warning("movies LIKE 降级失败: %s", e)
+    return rowids, movie_ids
+
+
+# SQLite SQLITE_MAX_VARIABLE_NUMBER 默认 999，IN 参数超限会报 "too many SQL variables"。
+# 下面函数在参数超过 _SAFE_IN_LIMIT 时建临时表替代 IN 列表，避免超限。
+_SAFE_IN_LIMIT = 900
+
+
+def _safe_in(conn, col: str, values: list) -> tuple[str, list]:
+    """返回 (sql_fragment, params)，IN 列表安全地表达 col IN values。
+
+    - values 为空 → ("0", [])（空集合）
+    - values ≤ 900 → ("col IN (?,?,...)", values)
+    - values > 900 → 建临时表存 values，返回 ("col IN (SELECT v FROM _tmp_xxx)", [])
+      调用方必须在同一个 conn 事务里用这个 SQL。
+    """
+    if not values:
+        return "0", []
+    if len(values) <= _SAFE_IN_LIMIT:
+        return f"{col} IN ({','.join('?' * len(values))})", list(values)
+    # 超限 → 临时表
+    tmp_name = f"_fts_tmp_{id(values)}"
+    conn.execute(f"DROP TABLE IF EXISTS {tmp_name}")
+    conn.execute(f"CREATE TEMP TABLE {tmp_name}(v INTEGER)"
+                 if isinstance(values[0], int) else
+                 f"CREATE TEMP TABLE {tmp_name}(v TEXT)")
+    # 分批灌（避免单条 INSERT 也超限）
+    for i in range(0, len(values), _SAFE_IN_LIMIT):
+        batch = values[i:i + _SAFE_IN_LIMIT]
+        conn.executemany(
+            f"INSERT INTO {tmp_name}(v) VALUES (?)",
+            [(v,) for v in batch])
+    return f"{col} IN (SELECT v FROM {tmp_name})", []
 
 
 _HASH_RE = re.compile(r"btih:([0-9a-fA-F]{40})")
@@ -383,11 +515,13 @@ def query_items(page: int = 1, keyword: str = "", category: str = "",
                 movie_id: str = "", page_size: int = 20, quality_bucket: str = ""):
     """查询本地库（按入库先后倒序）。
 
-    keyword 模糊匹配标题/种子名/hash/分类；category 为精确分类过滤（如"电影"）；
+    keyword 模糊匹配标题/种子名/影片名/分类/演职人员；
+    category 为精确分类过滤（如"电影"）；
     movie_id 过滤某部影片的全部版本；quality_bucket 按画质桶过滤（见 quality.py）。
     返回 (rows, total)。
     """
-    conds, params = [], []
+    conds: list[str] = []
+    params: list = []
     if category:
         conds.append("category = ?")
         params.append(category)
@@ -398,40 +532,48 @@ def query_items(page: int = 1, keyword: str = "", category: str = "",
         # 只对这部影片的行跑分类器（走 idx_magnets_movie_group 定位，行数很少）
         conds.append("quality_bucket(title) = ?")
         params.append(quality_bucket)
-    if keyword:
-        kw = f"%{keyword}%"
-        # 除种子自身字段外，还匹配影片的原名/别名/导演/主演（存在 movies 表）
-        conds.append(
-            "(title LIKE ? OR torrent_name LIKE ? OR info_hash LIKE ? OR category LIKE ?"
-            " OR movie_id IN (SELECT idcode FROM movies"
-            "                 WHERE otitle LIKE ? OR alias LIKE ?"
-            "                    OR performer LIKE ? OR director LIKE ?))")
-        params += [kw] * 8
-    where = " AND ".join(conds) or "1=1"
-    offset = (page - 1) * page_size
+
     with _db() as conn:
         if quality_bucket:
             _register_quality(conn)   # quality_bucket() 只有这时才用得上
+        if keyword:
+            # FTS5 两阶段：先拿 id 集合，再走主表索引回查。
+            # _safe_in 在同一连接里建临时表（超 900 值时），保证主查询能看到。
+            rowids, movie_ids = _fts_lookup(conn, keyword)
+            fts_conds: list[str] = []
+            fts_params: list = []
+            if rowids:
+                c, p = _safe_in(conn, "id", rowids)
+                fts_conds.append(c)
+                fts_params.extend(p)
+            if movie_ids:
+                c, p = _safe_in(conn, "movie_id", movie_ids)
+                fts_conds.append(c)
+                fts_params.extend(p)
+            # info_hash 不进 FTS——纯 hex 关键词（像 hash 片段）前缀匹配走 UNIQUE 索引
+            if re.fullmatch(r'[0-9a-fA-F]+', keyword):
+                fts_conds.append("info_hash LIKE ?")
+                fts_params.append(f"{keyword.lower()}%")
+            if not fts_conds:
+                conds.append("0")
+            else:
+                conds.append("(" + " OR ".join(fts_conds) + ")")
+                params.extend(fts_params)
+
+        where = " AND ".join(conds) or "1=1"
+        offset = (page - 1) * page_size
         total = conn.execute(
             f"SELECT COUNT(*) FROM magnets WHERE {where}", params).fetchone()[0]
-        if keyword:
-            # 关键词是 LIKE '%kw%'，无法走索引，两步法反而要多扫一遍，保持单次查询
-            rows = conn.execute(
-                f"SELECT * FROM magnets WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
-                [*params, page_size, offset],
-            ).fetchall()
-        else:
-            # 两步分页：先用索引定位本页首行（无分类过滤走 id 覆盖索引，
-            # 有分类过滤走 category 索引），再按 id 范围取整行。
-            # 直接 LIMIT/OFFSET 会让 SQLite 全表扫描并逐行丢弃，深页要读约 300MB。
-            anchor = conn.execute(
-                f"SELECT id FROM magnets WHERE {where} ORDER BY id DESC LIMIT 1 OFFSET ?",
-                [*params, offset],
-            ).fetchone()
-            rows = [] if anchor is None else conn.execute(
-                f"SELECT * FROM magnets WHERE {where} AND id <= ? ORDER BY id DESC LIMIT ?",
-                [*params, anchor[0], page_size],
-            ).fetchall()
+        # 两步分页：统一适用——FTS 关键词分支现在也是 id IN (...)，
+        # SQLite 能走索引定位本页首行，两步分页同样高效。
+        anchor = conn.execute(
+            f"SELECT id FROM magnets WHERE {where} ORDER BY id DESC LIMIT 1 OFFSET ?",
+            [*params, offset],
+        ).fetchone()
+        rows = [] if anchor is None else conn.execute(
+            f"SELECT * FROM magnets WHERE {where} AND id <= ? ORDER BY id DESC LIMIT ?",
+            [*params, anchor[0], page_size],
+        ).fetchall()
     return rows, total
 
 
@@ -720,15 +862,8 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
                      + " AND ".join(mconds) + ")")
         params += mparams
     if keyword:
-        kw = f"%{keyword}%"
-        # 原名/别名/导演/主演存在 movies 表里。用非相关 IN 子查询：SQLite 只会
-        # 求值一次并建临时索引，比逐行 EXISTS 相关子查询少一轮索引查找。
-        conds.append(
-            "(movie_title LIKE ? OR title LIKE ? OR movie_id LIKE ?"
-            " OR movie_id IN (SELECT idcode FROM movies"
-            "                 WHERE otitle LIKE ? OR alias LIKE ?"
-            "                    OR performer LIKE ? OR director LIKE ?))")
-        params += [kw] * 7
+        # keyword 放到 with 块里处理（临时表需要同一连接）
+        pass
     where = " AND ".join(conds)
     sort = sort if sort in _GROUP_SORT_EXPR else "last"
     group_sql = (f"SELECT movie_id, MAX(movie_title) AS movie_title,"
@@ -737,6 +872,31 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
     fields = ("g.movie_id, COALESCE(NULLIF(m.title, ''), g.movie_title) AS title,"
               " g.versions, m.image, m.poster_path, m.years, m.doub_score")
     with _db() as conn:
+        if keyword:
+            # FTS5 两阶段：先拿 id 集合再走主表索引。
+            # query_groups 的 keyword 原本还要 movie_id LIKE ?（直接搜影片 idcode）——
+            # fts_movies.content_rowid='idcode'，MATCH 返回的 rowid 就是 movies.idcode，
+            # 正好等于 magnets.movie_id 字段值，自动覆盖这个语义。
+            rowids, movie_ids = _fts_lookup(conn, keyword)
+            fts_conds: list[str] = []
+            fts_params: list = []
+            if rowids:
+                c, p = _safe_in(conn, "id", rowids)
+                fts_conds.append(c)
+                fts_params.extend(p)
+            if movie_ids:
+                c, p = _safe_in(conn, "movie_id", movie_ids)
+                fts_conds.append(c)
+                fts_params.extend(p)
+            if not fts_conds:
+                conds.append("0")
+            else:
+                conds.append("(" + " OR ".join(fts_conds) + ")")
+                params.extend(fts_params)
+            where = " AND ".join(conds)
+            group_sql = (f"SELECT movie_id, MAX(movie_title) AS movie_title,"
+                         f"       COUNT(*) AS versions, MAX(id) AS last_id"
+                         f" FROM magnets WHERE {where} GROUP BY movie_id")
         total = conn.execute(
             f"SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE {where}",
             params).fetchone()[0]
