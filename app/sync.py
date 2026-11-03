@@ -24,8 +24,9 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-from db import (clear_sync_progress, get_sync_done, get_sync_progress,
-                get_stats, set_sync_done, set_sync_progress, upsert_items)
+from db import (_hash_of, blank_movie_id_count, clear_sync_progress,
+                get_sync_done, get_sync_progress, get_stats, set_sync_done,
+                set_sync_progress, upsert_items)
 from movies import movie_detail_manager
 from sources.bt0 import BASE, SECTIONS, api_get, movie_ref
 
@@ -33,6 +34,10 @@ logger = logging.getLogger("resource-hub.sync")
 
 # 增量更新模式：连续 N 页全部已存在（无新资源）即判定已追平，提前结束
 EARLY_STOP_PAGES = 10
+# 一页里至少这么多条 movie_id 为空，才当作"待修复页"继续跑。
+# 站点改字段（aurl1 → mv）期间入库的页几乎整页空白；零星的个别空值
+# （片子被删/字段缺失）不该把增量拖到几千页，故设阈值
+REPAIR_MIN_BLANK = 5
 # 连续 N 页请求失败（已含 api_get 内部重试）才终止同步
 MAX_ERR_STREAK = 12
 
@@ -183,6 +188,7 @@ class SyncManager:
         early_stopped = False
         natural_end = False  # 仅当确认抓到板块真正末页时为 True（防误标"已完成"）
         new_total = 0        # 本次入库的新条数（增量更新用于结算提示）
+        repaired_total = 0   # 本次补全 movie_id 的条数（旧字段解析遗留的空值）
         failed_pages: list[int] = []  # 主循环中抓取失败的页，结束后补抓
         still_failed: list[int] = []  # 补抓一轮后仍失败的页（写进结束消息）
         try:
@@ -229,13 +235,22 @@ class SyncManager:
                                 break
                             continue
                         empty_streak = 0
+                        # 入库前先看这批 hash 里有多少条 movie_id 还空着：
+                        # upsert 会用站点新字段补上，所以必须在 _save 之前查
+                        repaired = 0
+                        if mode == "update":
+                            hs = [_hash_of((r.get("zlink") or "").strip()) for r in rows]
+                            repaired = blank_movie_id_count(hs)
+                            repaired_total += repaired
                         new_count = self._save(section, p, rows, mode)
                         new_total += max(0, new_count)
-                        # 增量模式：连续 EARLY_STOP_PAGES 页无新资源 → 已追平
+                        # 增量模式：连续 EARLY_STOP_PAGES 页既无新资源、也没有
+                        # 待修复的 movie_id → 已追平。待修复页也算进展，否则
+                        # 站点改字段后增量会在第 10 页就收工，后面的空值永远补不上
                         if mode == "update":
-                            if new_count > 0:
+                            if new_count > 0 or repaired >= REPAIR_MIN_BLANK:
                                 known_streak = 0
-                            elif new_count == 0:
+                            else:
                                 known_streak += 1
                                 if known_streak >= EARLY_STOP_PAGES:
                                     end = True
@@ -280,10 +295,14 @@ class SyncManager:
                 logger.info("同步停止：%s，已完成到第 %d 页，可断点续抓",
                             label, self.state["page"])
             elif early_stopped:
-                self.state["message"] = (f"已是最新：本次新增 {new_total} 条" if new_total
-                                         else "已是最新，无新增资源")
-                logger.info("%s 增量更新完成：本次新增 %d 条，连续 %d 页无新资源，提前结束",
-                            label, new_total, EARLY_STOP_PAGES)
+                bits = [f"新增 {new_total} 条"] if new_total else []
+                if repaired_total:
+                    bits.append(f"补全影片关联 {repaired_total} 条")
+                self.state["message"] = ("已是最新：" + "，".join(bits)) if bits \
+                    else "已是最新，无新增资源"
+                logger.info("%s 增量更新完成：本次新增 %d 条、补全影片关联 %d 条，"
+                            "连续 %d 页无进展，提前结束",
+                            label, new_total, repaired_total, EARLY_STOP_PAGES)
             elif natural_end:
                 # 确认抓到板块真正末页：标记完成并清除断点，下次运行自动转增量更新
                 set_sync_done("bt0", section)

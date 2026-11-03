@@ -117,10 +117,12 @@ def movie_ref(row: dict) -> dict:
     """从一行原始数据里提取影片关联信息（片名 + 影片 id）。
 
     片名字段是干净的片名（zname 才是完整发布名）；
-    aurl1 形如 /mv/1945336，末段数字即影片 id（对应 getVideoDetail 的 idcode）。
+    影片链接形如 /mv/1945336，末段数字即影片 id（对应 getVideoDetail 的 idcode）。
+    站点 2026-11 起把该字段从 aurl1 改名为 mv（同时 aurl 改成 /tr/<id>.html
+    的种子页），这里优先取 mv，并用 aurl1 兜底兼容老响应。
     """
-    aurl1 = (row.get("aurl1") or "").strip().rstrip("/")
-    movie_id = aurl1.split("/")[-1] if aurl1 else ""
+    path = (row.get("mv") or row.get("aurl1") or "").strip().rstrip("/")
+    movie_id = path.split("/")[-1] if path else ""
     return {
         "movie_id": movie_id if movie_id.isdigit() else "",
         "movie_title": html.unescape((row.get("title") or "").strip()),

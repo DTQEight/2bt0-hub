@@ -286,6 +286,23 @@ def upsert_items(source: str, items) -> int:
     return len({h for h in hashes if h not in existing})
 
 
+def blank_movie_id_count(hashes) -> int:
+    """给定一批 info_hash，返回其中 movie_id 仍为空的行数。
+
+    站点改动影片链接字段（aurl1 → mv）后，用旧解析写进库的行 movie_id 为空、
+    在海报墙的分组视图里看不到。增量更新把这类页视为"待修复、仍有进展"，
+    才能一路补完受影响区间，而不是连续 10 页无新资源就提前收工。
+    """
+    hashes = [h for h in hashes if h]
+    if not hashes:
+        return 0
+    with _db() as conn:
+        ph = ",".join("?" * len(hashes))
+        return conn.execute(
+            f"SELECT COUNT(*) FROM magnets WHERE info_hash IN ({ph})"
+            f" AND movie_id = ''", hashes).fetchone()[0]
+
+
 # ---- 种子画质桶（quality.py）----
 #
 # 只服务于「电影详情页按画质筛这部片子的磁力」。一部影片平均 8.8 个版本
