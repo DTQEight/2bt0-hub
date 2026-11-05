@@ -54,6 +54,14 @@ HEADERS = {
 # Cookie 存 settings 表，优先于环境变量 BT0_COOKIE。
 ENV_COOKIE = os.environ.get("BT0_COOKIE", "").strip()
 
+# 站点按请求 IP 下发 token：容器若有多出口（多网卡 / IPv6 轮换），每次新建
+# 连接可能落到不同出口 IP 上，表现就是「刚换签的 token 下一次立刻失效、
+# 页面时间戳每请求都变」。用 Session 复用长连接，把同一批请求固定在同一条
+# 连接（同一出口 IP）上，换签才会真正生效。
+SESSION = requests.Session()
+SESSION.mount("https://", requests.adapters.HTTPAdapter(
+    pool_connections=8, pool_maxsize=16, max_retries=0))
+
 logger = logging.getLogger("resource-hub.bt0")
 
 _waf_gen = 0  # Cookie 代数：每次换签/手动设置 +1，供并发线程复用新 token
@@ -106,9 +114,10 @@ set_cookie("")  # 启动时先用环境变量兜底，网页设置过的值由 m
 
 # 站点 WAF 下发 ge_js_validator_18 的 JS 挑战页（200 + HTML），里面有
 # document.cookie = "ge_js_validator_18=<timestamp>@<level>@<hash>;..."
+# （不同出口 IP 可能是单引号模板，这里引号和空白都当终止符）
 # 这个 token 绑定到当前请求 IP，所以 NAS 上保存的 Cookie 一旦失效，
 # 直接拿挑战页下发的新 token 重试即可，不需要人去浏览器过滑块。
-_WAF_TOKEN_RE = re.compile(r'ge_js_validator_18=([^;"]+)')
+_WAF_TOKEN_RE = re.compile(r"ge_js_validator_18=([^;\"'\s]+)")
 
 # 同一出口 IP 只会被认最新的那份 token：多个同步线程同时撞到挑战页时，
 # 若各自换签就会互相覆盖（表现为 token 几秒内疯狂轮换、却永远被拦）。
@@ -169,7 +178,7 @@ def api_get(endpoint: str, params: dict) -> dict:
     while True:
         gen_before = _waf_gen  # 请求前记录代数，用于判断是否有人已换签
         try:
-            r = requests.get(
+            r = SESSION.get(
                 f"{API}/{endpoint}",
                 params={**APP_PARAMS, **params},
                 headers=HEADERS,
@@ -194,8 +203,8 @@ def api_get(endpoint: str, params: dict) -> dict:
                 if renewed:
                     waf_attempt += 1
                     if waf_attempt > WAF_RETRIES:
-                        logger.warning("WAF 换签 %d 次仍被拦，挑战页片段: %s",
-                                       waf_attempt, r.text[:160].replace("\n", " "))
+                        logger.warning("WAF 换签 %d 次仍被拦，挑战页全文: %s",
+                                       waf_attempt, r.text[:600].replace("\n", " "))
                         raise SourceError(
                             "WAF 拦截：自动续签 ge_js_validator_18 后仍被拦截，"
                             "可在网页「同步」页点「自动获取」重试，或手动粘贴 Cookie")
