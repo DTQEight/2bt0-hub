@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import html
 import os
+import re
 import time
 
 import requests
@@ -89,12 +90,42 @@ def test_connection(section: int = 1, page: int = 1) -> dict:
 
 set_cookie("")  # 启动时先用环境变量兜底，网页设置过的值由 main.py 启动时覆盖
 
+# 站点 WAF 下发 ge_js_validator_18 的 JS 挑战页（200 + HTML），里面有
+# document.cookie = "ge_js_validator_18=<timestamp>@<level>@<hash>;..."
+# 这个 token 绑定到当前请求 IP，所以 NAS 上保存的 Cookie 一旦失效，
+# 直接拿挑战页下发的新 token 重试即可，不需要人去浏览器过滑块。
+_WAF_TOKEN_RE = re.compile(r'ge_js_validator_18=([^;"]+)')
+
+
+def _renew_waf_token(html_text: str) -> bool:
+    """从 WAF 挑战页 HTML 里提取 ge_js_validator_18，替换到当前 Cookie。
+
+    返回 True 表示提取到了新 token 并已写入 HEADERS（下次请求自动带上）。
+    """
+    m = _WAF_TOKEN_RE.search(html_text)
+    if not m:
+        return False
+    new_token = m.group(1)
+    old = HEADERS.get("Cookie", "")
+    # 替换或追加 ge_js_validator_18，保留其他 Cookie
+    if "ge_js_validator_18=" in old:
+        new_cookie = re.sub(r'ge_js_validator_18=[^;]*', f'ge_js_validator_18={new_token}', old)
+    else:
+        new_cookie = f"{old}; ge_js_validator_18={new_token}" if old else f"ge_js_validator_18={new_token}"
+    HEADERS["Cookie"] = new_cookie
+    return True
+
+
 # 板块代码 → 名称（与官网 /tlist/{sc}_{page}.html 一致；3/4/5 热门榜不抓）
 SECTIONS = {1: "电影", 2: "电视剧"}
 
 
 def api_get(endpoint: str, params: dict) -> dict:
-    """调用 2bt0 JSON API（该站 TLS 不稳定，带重试）"""
+    """调用 2bt0 JSON API（该站 TLS 不稳定，带重试）。
+
+    WAF 处理：若响应是 JS 挑战页（HTML 含 ge_js_validator_18），
+    解析新 token 并自动重试一次，无需人工干预。
+    """
     for attempt in range(RETRIES + 1):
         try:
             r = requests.get(
@@ -105,12 +136,21 @@ def api_get(endpoint: str, params: dict) -> dict:
                 verify=False,  # 该站证书链不完整
             )
             if "/WAF/VERIFY" in str(r.url):
-                # requests 会跟随 307 重定向，所以看最终 URL 是否落在验证页。
-                # WAF 拦截重试也不会过，直接给出可操作的错误、不进重试
                 raise SourceError(
                     "WAF 拦截：站点要求人机验证。在浏览器打开 2bt0.com 过一次滑块，"
                     "把新 Cookie 粘贴到网页「同步」页的「WAF 验证 Cookie」卡片"
                     "（或更新 BT0_COOKIE 环境变量），保存后可继续同步")
+            # WAF JS 挑战页（200 + 短 HTML）：解析新 token 后自动重试
+            if not r.text.startswith("{") and "ge_js_validator_18=" in r.text:
+                if _renew_waf_token(r.text):
+                    if attempt < RETRIES:
+                        time.sleep(0.5)
+                        continue
+                    # 重试次数用完但还是挑战页
+                    raise SourceError(
+                        "WAF 拦截：自动续签 ge_js_validator_18 后仍被拦截，"
+                        "请在浏览器打开 2bt0.com 过一次滑块并复制 Cookie")
+                raise SourceError("WAF 拦截：无法解析挑战页中的 ge_js_validator_18")
             try:
                 data = r.json()
             except ValueError as exc:
