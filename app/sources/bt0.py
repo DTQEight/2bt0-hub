@@ -19,6 +19,7 @@ import html
 import logging
 import os
 import re
+import threading
 import time
 
 import requests
@@ -32,7 +33,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BASE = "https://www.2bt0.com"
 API = BASE + "/prod/api/v1"
 PAGE_SIZE = 20
-RETRIES = 2
+RETRIES = 2          # 网络/网关异常的重试次数
+WAF_RETRIES = 4      # 撞 WAF 挑战页的重试次数（换签后偶发再被拦，需要更多耐心）
 
 # 取自站点前端 JS 的固定参数（公开接口标识，无需登录）
 APP_PARAMS = {"app_id": "83768d9ad4", "identity": "23734adac0301bccdcb107c4aa21f96c"}
@@ -54,6 +56,8 @@ ENV_COOKIE = os.environ.get("BT0_COOKIE", "").strip()
 
 logger = logging.getLogger("resource-hub.bt0")
 
+_waf_gen = 0  # Cookie 代数：每次换签/手动设置 +1，供并发线程复用新 token
+
 
 def set_cookie(cookie: str, force: bool = False) -> str:
     """设置 WAF 验证 Cookie（网页保存后调用，立即生效、无需重启）。
@@ -68,6 +72,9 @@ def set_cookie(cookie: str, force: bool = False) -> str:
         HEADERS["Cookie"] = cookie
     else:
         HEADERS.pop("Cookie", None)
+    # 手工/接口设置了新 Cookie 也算一次换代，正在重试的线程直接复用它
+    global _waf_gen
+    _waf_gen += 1
     return cookie
 
 
@@ -102,6 +109,12 @@ set_cookie("")  # 启动时先用环境变量兜底，网页设置过的值由 m
 # 这个 token 绑定到当前请求 IP，所以 NAS 上保存的 Cookie 一旦失效，
 # 直接拿挑战页下发的新 token 重试即可，不需要人去浏览器过滑块。
 _WAF_TOKEN_RE = re.compile(r'ge_js_validator_18=([^;"]+)')
+
+# 同一出口 IP 只会被认最新的那份 token：多个同步线程同时撞到挑战页时，
+# 若各自换签就会互相覆盖（表现为 token 几秒内疯狂轮换、却永远被拦）。
+# 这里用一把锁 + 代数计数，保证同一时刻只有一个线程换签，其余线程直接
+# 复用换好的新 Cookie 重试。
+_WAF_LOCK = threading.Lock()
 
 
 def _persist_cookie(cookie: str) -> None:
@@ -144,9 +157,17 @@ def api_get(endpoint: str, params: dict) -> dict:
     """调用 2bt0 JSON API（该站 TLS 不稳定，带重试）。
 
     WAF 处理：若响应是 JS 挑战页（HTML 含 ge_js_validator_18），
-    解析新 token 并自动重试一次，无需人工干预。
+    解析新 token 后重试，无需人工干预。
+
+    并发要点：同一 IP 只认最新 token，多线程各自换签会互相覆盖并无限
+    循环「换签→仍被拦」。换签用 _WAF_LOCK 串行化 + 代数校验：如果等待
+    锁期间已有别的线程换过，就直接复用那份新 Cookie，不再重复换。
     """
-    for attempt in range(RETRIES + 1):
+    global _waf_gen
+    net_attempt = 0
+    waf_attempt = 0
+    while True:
+        gen_before = _waf_gen  # 请求前记录代数，用于判断是否有人已换签
         try:
             r = requests.get(
                 f"{API}/{endpoint}",
@@ -160,16 +181,26 @@ def api_get(endpoint: str, params: dict) -> dict:
                     "WAF 拦截：站点要求人机验证。先在网页「同步」页点「自动获取」"
                     "换一次 Cookie；仍不行再在浏览器打开 2bt0.com 过验证，"
                     "把 ge_js_validator_18 粘贴到「WAF 验证 Cookie」卡片并保存")
-            # WAF JS 挑战页（200 + 短 HTML）：解析新 token 后自动重试
+            # WAF JS 挑战页（200 + 短 HTML）
             if not r.text.startswith("{") and "ge_js_validator_18=" in r.text:
-                if _renew_waf_token(r.text):
-                    if attempt < RETRIES:
-                        time.sleep(0.5)
-                        continue
-                    # 重试次数用完但还是挑战页
-                    raise SourceError(
-                        "WAF 拦截：自动续签 ge_js_validator_18 后仍被拦截，"
-                        "可在网页「同步」页点「自动获取」重试，或手动粘贴 Cookie")
+                renewed = False
+                with _WAF_LOCK:
+                    if _waf_gen != gen_before:
+                        renewed = True  # 别的线程刚换过，直接用它的新 token
+                    else:
+                        renewed = _renew_waf_token(r.text)
+                        if renewed:
+                            _waf_gen += 1
+                if renewed:
+                    waf_attempt += 1
+                    if waf_attempt > WAF_RETRIES:
+                        logger.warning("WAF 换签 %d 次仍被拦，挑战页片段: %s",
+                                       waf_attempt, r.text[:160].replace("\n", " "))
+                        raise SourceError(
+                            "WAF 拦截：自动续签 ge_js_validator_18 后仍被拦截，"
+                            "可在网页「同步」页点「自动获取」重试，或手动粘贴 Cookie")
+                    time.sleep(min(0.4 * waf_attempt, 2.5))
+                    continue
                 raise SourceError("WAF 拦截：无法解析挑战页中的 ge_js_validator_18")
             try:
                 data = r.json()
@@ -186,8 +217,9 @@ def api_get(endpoint: str, params: dict) -> dict:
         except SourceError:
             raise
         except requests.exceptions.RequestException as exc:
-            if attempt < RETRIES:
-                time.sleep(1.5 * (attempt + 1))
+            if net_attempt < RETRIES:
+                net_attempt += 1
+                time.sleep(1.5 * net_attempt)
                 continue
             raise SourceError(f"2bt0 接口请求失败（已重试 {RETRIES} 次）: {exc}") from exc
 
