@@ -1320,14 +1320,43 @@ async function loadWafCookie() {
         <input id="waf-cookie-input" type="password" autocomplete="off"
                placeholder="形如 ge_wc_18=xxx" />
         <button type="button" class="act" id="waf-cookie-save">保存</button>
+        <button type="button" class="act" id="waf-cookie-test">测试</button>
       </div>
+      <p class="api-hint" id="waf-test-result"></p>
       <p class="api-hint">
         同步日志出现「WAF 拦截」时：浏览器打开 2bt0.com 过一次滑块，
         DevTools → Application → Cookies 复制验证 Cookie 粘贴到这里，
-        保存后立即生效、无需重启。
+        保存后立即生效、无需重启。点「测试」会真实请求一次站点列表接口，
+        输入框留空则测试已保存的 Cookie。
       </p>
     </div>`;
   box.querySelector("#waf-cookie-save").addEventListener("click", saveWafCookie);
+  box.querySelector("#waf-cookie-test").addEventListener("click", testWafCookie);
+}
+
+async function testWafCookie() {
+  const box = el["waf-card"];
+  const input = box.querySelector("#waf-cookie-input");
+  const btn = box.querySelector("#waf-cookie-test");
+  const out = box.querySelector("#waf-test-result");
+  btn.disabled = true;
+  out.textContent = "测试中…";
+  try {
+    const res = await fetch("/api/bt0cookie/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cookie: input.value.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    out.textContent = data.message || (data.success ? "抓取正常" : "测试失败");
+    showToast(data.success ? "Cookie 可用" : "Cookie 不可用");
+  } catch (err) {
+    out.textContent = `测试失败：${err.message}`;
+    showToast(`测试失败：${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function saveWafCookie() {

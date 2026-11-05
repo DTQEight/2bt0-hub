@@ -68,6 +68,25 @@ def get_cookie() -> str:
     return HEADERS.get("Cookie", "")
 
 
+def test_connection(section: int = 1, page: int = 1) -> dict:
+    """用当前 Cookie 真实请求一次列表接口，判断是否已通过 WAF。
+
+    供网页「同步」页的「测试」按钮调用：成功返回条数/耗时/样例标题，
+    被 WAF 拦截时抛 SourceError（错误文案里已写明怎么换 Cookie）。
+    """
+    t0 = time.monotonic()
+    data = api_get("getTList", {"sc": section, "page": page})
+    rows = data.get("list") or []
+    sample = ""
+    if rows:
+        sample = str(rows[0].get("title") or rows[0].get("zname") or "")[:40]
+    return {
+        "count": len(rows),
+        "latency_ms": int((time.monotonic() - t0) * 1000),
+        "sample": sample,
+    }
+
+
 set_cookie("")  # 启动时先用环境变量兜底，网页设置过的值由 main.py 启动时覆盖
 
 # 板块代码 → 名称（与官网 /tlist/{sc}_{page}.html 一致；3/4/5 热门榜不抓）

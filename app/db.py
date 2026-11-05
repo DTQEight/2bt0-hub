@@ -225,19 +225,14 @@ def _fts_match_expr(kw: str) -> str:
 
     - 去掉 FTS 保留字符（双引号 / 通配符 @ * - / 括号等）
     - 按空白拆词
-    - trigram tokenizer 限制：
-        * 纯数字 token（"2024"）太泛——torrent_name 里年份命中几万行 → 丢弃
-        * ≤2 字 token（"诺兰"/单字）切不出 trigram 片段 → 丢弃
-    - 剩余 ≥3 字 token 用 OR 连接短语匹配
-    - 所有有效 token 都被过滤时返回 ""（调用方应让降级 LIKE 兜底）
+    - trigram tokenizer 要求 ≥3 字符才能切出片段，≤2 字的 token 丢弃
+      （如"诺兰"/单字），剩余 ≥3 字 token 用 OR 连接短语匹配
+    - 所有有效 token 都被过滤时返回 ""（调用方走短词 LIKE 兜底）
     """
     if not kw or not kw.strip():
         return ""
     cleaned = re.sub(r'["*@\-()<>=~]', '', kw)
-    tokens = [t for t in re.split(r'\s+', cleaned) if t]
-    # trigram 能用的 token：非纯数字 + 长度 ≥3
-    tokens = [t for t in tokens
-              if not re.fullmatch(r'\d+', t) and len(t) >= 3]
+    tokens = [t for t in re.split(r'\s+', cleaned) if len(t) >= 3]
     if not tokens:
         return ""
     return " OR ".join(f'"{t}"' for t in tokens)
@@ -250,9 +245,8 @@ def _fts_lookup(conn, kw: str) -> tuple[list[int], list[str]]:
     movie_ids 是 movies.idcode（TEXT），走 magnets.movie_id 索引。
     任一查询异常都降级返回空列表，不让 FTS 故障击穿主查询。
 
-    trigram tokenizer 对关键词长度有要求（中文 ≤2 字切不出完整片段、空格拆分
-    出的单字短语也无效），任何 FTS 无命中 + kw 非空的情况都降级 movies 表 LIKE——
-    扫 movies 93K 行约 150ms，远好于扫 magnets 825K 行全扫。
+    短词（≤2 字，如"中字"/"4K"）trigram 索引切不出片段，只能退回 LIKE 全扫；
+    这类关键词在磁力标题里很常见，不能丢，所以保留兜底（比原实现覆盖范围不变）。
     """
     expr = _fts_match_expr(kw)
     rowids, movie_ids = [], []
@@ -267,24 +261,24 @@ def _fts_lookup(conn, kw: str) -> tuple[list[int], list[str]]:
                 "SELECT rowid FROM fts_movies WHERE fts_movies MATCH ?", (expr,)).fetchall()]
         except sqlite3.OperationalError as e:
             logger.warning("fts_movies 查询失败: %s", e)
-    # 降级：FTS 无命中 + kw 非空 + 不是纯 hex
-    # （纯 hex 用户意图搜 hash，movies 表不会有 hash 值，降级 LIKE 白扫 93K 行）
-    # trigram tokenizer 的盲区：短词、空格拆分成的单字、以及其他 tokenizer 限制的情况都能覆盖
-    # 中间空格也去掉（用户输"诺  兰"应该命中"诺兰"）
-    stripped = kw.strip()
-    is_hex = bool(re.fullmatch(r'[0-9a-fA-F]+', stripped))
-    if stripped and not is_hex and not rowids and not movie_ids:
-        compact = re.sub(r'\s+', '', stripped)
-        if compact:
-            like_kw = f"%{compact}%"
+
+    # 短词兜底：expr 为空（全部 token <3 字）且不是纯 hex（hex 由调用方前缀匹配）
+    # 中间空格也去掉（用户输"中 字"应命中"中字"）
+    compact = re.sub(r'\s+', '', kw)
+    if not expr and compact and not re.fullmatch(r'[0-9a-fA-F]+', compact):
+        like_kw = f"%{compact}%"
         try:
-            fallback = [str(r[0]) for r in conn.execute(
-                "SELECT idcode FROM movies WHERE otitle LIKE ? OR alias LIKE ?"
-                " OR performer LIKE ? OR director LIKE ?",
+            rowids = [r[0] for r in conn.execute(
+                "SELECT id FROM magnets WHERE title LIKE ? OR torrent_name LIKE ?"
+                " OR movie_title LIKE ? OR category LIKE ?",
                 [like_kw] * 4).fetchall()]
-            movie_ids = list(set(movie_ids + fallback))
+            movie_ids = [str(r[0]) for r in conn.execute(
+                "SELECT idcode FROM movies WHERE title LIKE ? OR otitle LIKE ?"
+                " OR alias LIKE ? OR performer LIKE ? OR director LIKE ?",
+                [like_kw] * 5).fetchall()]
         except sqlite3.OperationalError as e:
-            logger.warning("movies LIKE 降级失败: %s", e)
+            logger.warning("短词 LIKE 兜底失败: %s", e)
+            rowids, movie_ids = [], []
     return rowids, movie_ids
 
 
@@ -537,28 +531,37 @@ def query_items(page: int = 1, keyword: str = "", category: str = "",
         if quality_bucket:
             _register_quality(conn)   # quality_bucket() 只有这时才用得上
         if keyword:
-            # FTS5 两阶段：先拿 id 集合，再走主表索引回查。
-            # _safe_in 在同一连接里建临时表（超 900 值时），保证主查询能看到。
-            rowids, movie_ids = _fts_lookup(conn, keyword)
-            fts_conds: list[str] = []
-            fts_params: list = []
-            if rowids:
-                c, p = _safe_in(conn, "id", rowids)
-                fts_conds.append(c)
-                fts_params.extend(p)
-            if movie_ids:
-                c, p = _safe_in(conn, "movie_id", movie_ids)
-                fts_conds.append(c)
-                fts_params.extend(p)
-            # info_hash 不进 FTS——纯 hex 关键词（像 hash 片段）前缀匹配走 UNIQUE 索引
-            if re.fullmatch(r'[0-9a-fA-F]+', keyword):
-                fts_conds.append("info_hash LIKE ?")
-                fts_params.append(f"{keyword.lower()}%")
-            if not fts_conds:
-                conds.append("0")
+            # 关键词正好是分类名（"电影"/"电视剧"）时直接走分类索引，避免文本全扫
+            compact = re.sub(r'\s+', '', keyword)
+            if compact and conn.execute(
+                    "SELECT 1 FROM magnets WHERE category = ? LIMIT 1",
+                    (compact,)).fetchone():
+                conds.append("category = ?")
+                params.append(compact)
             else:
-                conds.append("(" + " OR ".join(fts_conds) + ")")
-                params.extend(fts_params)
+                # FTS5 两阶段：先拿 id 集合，再走主表索引回查。
+                # _safe_in 在同一连接里建临时表（超 900 值时），保证主查询能看到。
+                rowids, movie_ids = _fts_lookup(conn, keyword)
+                fts_conds: list[str] = []
+                fts_params: list = []
+                if rowids:
+                    c, p = _safe_in(conn, "id", rowids)
+                    fts_conds.append(c)
+                    fts_params.extend(p)
+                if movie_ids:
+                    c, p = _safe_in(conn, "movie_id", movie_ids)
+                    fts_conds.append(c)
+                    fts_params.extend(p)
+                # info_hash 不进 FTS——纯 hex 关键词（像 hash 片段）前缀匹配走 UNIQUE 索引。
+                # 用 GLOB（大小写敏感、无 LIKE 的 NOCASE 优化限制），BINARY 索引能直接定位
+                if re.fullmatch(r'[0-9a-fA-F]+', keyword):
+                    fts_conds.append("info_hash GLOB ?")
+                    fts_params.append(f"{keyword.lower()}*")
+                if not fts_conds:
+                    conds.append("0")
+                else:
+                    conds.append("(" + " OR ".join(fts_conds) + ")")
+                    params.extend(fts_params)
 
         where = " AND ".join(conds) or "1=1"
         offset = (page - 1) * page_size
@@ -862,7 +865,7 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
                      + " AND ".join(mconds) + ")")
         params += mparams
     if keyword:
-        # keyword 放到 with 块里处理（临时表需要同一连接）
+        # keyword 在下面的 with 块里处理（临时表需要同一连接）
         pass
     where = " AND ".join(conds)
     sort = sort if sort in _GROUP_SORT_EXPR else "last"
@@ -873,26 +876,34 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
               " g.versions, m.image, m.poster_path, m.years, m.doub_score")
     with _db() as conn:
         if keyword:
-            # FTS5 两阶段：先拿 id 集合再走主表索引。
-            # query_groups 的 keyword 原本还要 movie_id LIKE ?（直接搜影片 idcode）——
-            # fts_movies.content_rowid='idcode'，MATCH 返回的 rowid 就是 movies.idcode，
-            # 正好等于 magnets.movie_id 字段值，自动覆盖这个语义。
-            rowids, movie_ids = _fts_lookup(conn, keyword)
-            fts_conds: list[str] = []
-            fts_params: list = []
-            if rowids:
-                c, p = _safe_in(conn, "id", rowids)
-                fts_conds.append(c)
-                fts_params.extend(p)
-            if movie_ids:
-                c, p = _safe_in(conn, "movie_id", movie_ids)
-                fts_conds.append(c)
-                fts_params.extend(p)
-            if not fts_conds:
-                conds.append("0")
+            # 关键词正好是分类名（"电影"/"电视剧"）时直接走分类索引，避免文本全扫
+            compact = re.sub(r'\s+', '', keyword)
+            if compact and conn.execute(
+                    "SELECT 1 FROM magnets WHERE category = ? LIMIT 1",
+                    (compact,)).fetchone():
+                conds.append("category = ?")
+                params.append(compact)
             else:
-                conds.append("(" + " OR ".join(fts_conds) + ")")
-                params.extend(fts_params)
+                # FTS5 两阶段：先拿 id 集合再走主表索引。
+                # query_groups 的 keyword 原本还要 movie_id LIKE ?（直接搜影片 idcode）——
+                # fts_movies.content_rowid='idcode'，MATCH 返回的 rowid 就是 movies.idcode，
+                # 正好等于 magnets.movie_id 字段值，自动覆盖这个语义。
+                rowids, movie_ids = _fts_lookup(conn, keyword)
+                fts_conds: list[str] = []
+                fts_params: list = []
+                if rowids:
+                    c, p = _safe_in(conn, "id", rowids)
+                    fts_conds.append(c)
+                    fts_params.extend(p)
+                if movie_ids:
+                    c, p = _safe_in(conn, "movie_id", movie_ids)
+                    fts_conds.append(c)
+                    fts_params.extend(p)
+                if not fts_conds:
+                    conds.append("0")
+                else:
+                    conds.append("(" + " OR ".join(fts_conds) + ")")
+                    params.extend(fts_params)
             where = " AND ".join(conds)
             group_sql = (f"SELECT movie_id, MAX(movie_title) AS movie_title,"
                          f"       COUNT(*) AS versions, MAX(id) AS last_id"

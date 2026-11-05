@@ -26,7 +26,7 @@ from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
-from sources.bt0 import SECTIONS, get_cookie, set_cookie
+from sources.bt0 import SECTIONS, get_cookie, set_cookie, test_connection
 from sync import sync_manager
 import cloud115
 import transfer_history
@@ -464,6 +464,36 @@ async def bt0_cookie_set(body: dict) -> dict:
     set_cookie(cookie)
     logger.info("2bt0 WAF Cookie 已更新（网页设置，立即生效）")
     return {"success": True, "message": "Cookie 已保存并立即生效"}
+
+
+@app.post("/api/bt0cookie/test")
+async def bt0_cookie_test(body: dict) -> dict:
+    """用当前 Cookie 真实请求一次列表接口，验证是否已通过 WAF。
+
+    传 cookie 时只用于本次测试（测完还原，不会覆盖已保存的值），
+    方便先验证再保存。
+    """
+    prev = get_cookie()
+    cookie = (body.get("cookie") or "").strip()
+    if cookie:
+        set_cookie(cookie)
+    try:
+        info = await asyncio.to_thread(test_connection, 1, 1)
+    except SourceError as exc:
+        return {"success": False, "message": str(exc)}
+    except Exception as exc:  # 网络/解析异常也要给前端可读结果
+        return {"success": False, "message": f"测试失败: {exc}"}
+    finally:
+        if cookie:
+            set_cookie(prev)  # 测试不改变当前生效的 Cookie
+    return {
+        "success": True,
+        "count": info["count"],
+        "latency_ms": info["latency_ms"],
+        "sample": info["sample"],
+        "message": (f"抓取正常：{info['count']} 条 / {info['latency_ms']}ms"
+                    + (f"，首条「{info['sample']}」" if info["sample"] else "")),
+    }
 
 
 @app.get("/api/logs")
