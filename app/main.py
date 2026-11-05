@@ -442,16 +442,20 @@ async def schedule_set(body: dict) -> dict:
     return _schedule_payload(cfg)
 
 
+def _mask_cookie(cookie: str) -> str:
+    """Cookie 只回掩码，网页接口不暴露完整验证串"""
+    if not cookie:
+        return ""
+    return (cookie[:6] + "****" + cookie[-6:]) if len(cookie) > 20 else "****"
+
+
 @app.get("/api/bt0cookie")
 async def bt0_cookie_view() -> dict:
     """当前生效的 2bt0 WAF 验证 Cookie（只回掩码，不回明文）"""
     active = get_cookie()
     saved = get_setting("bt0.cookie", "")
     source = "网页设置" if saved else ("环境变量" if active else "")
-    masked = ""
-    if active:
-        masked = (active[:6] + "****" + active[-6:]) if len(active) > 20 else "****"
-    return {"has_cookie": bool(active), "cookie_masked": masked, "source": source}
+    return {"has_cookie": bool(active), "cookie_masked": _mask_cookie(active), "source": source}
 
 
 @app.post("/api/bt0cookie")
@@ -493,6 +497,39 @@ async def bt0_cookie_test(body: dict) -> dict:
         "sample": info["sample"],
         "message": (f"抓取正常：{info['count']} 条 / {info['latency_ms']}ms"
                     + (f"，首条「{info['sample']}」" if info["sample"] else "")),
+    }
+
+
+@app.post("/api/bt0cookie/renew")
+async def bt0_cookie_renew() -> dict:
+    """在容器内自动获取新的 WAF Cookie（NAS 上不必再去浏览器手动复制）。
+
+    清空旧 Cookie 请求一次站点列表：站点回 JS 挑战页，从中取出带当前
+    请求 IP 的新 token 后重试，验证通过即落库；失败则回滚原来的 Cookie。
+    """
+    prev = get_cookie()
+    try:
+        set_cookie("", force=True)
+        info = await asyncio.to_thread(test_connection, 1, 1)
+    except SourceError as exc:
+        set_cookie(prev, force=True)
+        return {"success": False, "message": str(exc)}
+    except Exception as exc:  # 网络/解析异常也要给前端可读结果
+        set_cookie(prev, force=True)
+        return {"success": False, "message": f"自动获取失败: {exc}"}
+    cookie = get_cookie()
+    if not cookie:
+        set_cookie(prev, force=True)
+        return {"success": False, "message": "站点未下发验证 Cookie"}
+    set_setting("bt0.cookie", cookie)
+    logger.info("2bt0 WAF Cookie 已自动获取并保存（%s）", _mask_cookie(cookie))
+    return {
+        "success": True,
+        "cookie_masked": _mask_cookie(cookie),
+        "count": info["count"],
+        "latency_ms": info["latency_ms"],
+        "message": (f"已自动获取新 Cookie 并验证通过：{info['count']} 条 / "
+                    f"{info['latency_ms']}ms"),
     }
 
 

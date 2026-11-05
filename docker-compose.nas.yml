@@ -20,8 +20,9 @@ services:
       DATA_DIR: /data
       # 必须设置：定时任务按容器本地时间触发，不设则为 UTC，会差 8 小时
       TZ: Asia/Shanghai
-      # 2bt0 站点 WAF 验证 Cookie：同步报「WAF 拦截」时，在浏览器打开 2bt0.com
-      # 过一次人机验证，把 Cookie（形如 ge_wc_18=xxx）填到下面并重启容器
+      # 2bt0 站点 WAF 验证 Cookie：一般留空即可——容器会自己从站点的 JS
+      # 挑战页换取带当前出口 IP 的 ge_js_validator_18，也可在网页「同步」页
+      # 点「自动获取」或在卡片里手动粘贴（存数据库，二者都无需重启容器）
       BT0_COOKIE: ""
     volumes:
       # 数据库与日志的持久化目录，可改成 NAS 上的绝对路径

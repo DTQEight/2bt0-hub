@@ -1318,20 +1318,45 @@ async function loadWafCookie() {
       <div class="api-row">
         <span class="api-label">新 Cookie</span>
         <input id="waf-cookie-input" type="password" autocomplete="off"
-               placeholder="形如 ge_wc_18=xxx" />
+               placeholder="形如 ge_js_validator_18=xxx" />
+        <button type="button" class="act" id="waf-cookie-renew">自动获取</button>
         <button type="button" class="act" id="waf-cookie-save">保存</button>
         <button type="button" class="act" id="waf-cookie-test">测试</button>
       </div>
       <p class="api-hint" id="waf-test-result"></p>
       <p class="api-hint">
-        同步日志出现「WAF 拦截」时：浏览器打开 2bt0.com 过一次滑块，
-        DevTools → Application → Cookies 复制验证 Cookie 粘贴到这里，
-        保存后立即生效、无需重启。点「测试」会真实请求一次站点列表接口，
-        输入框留空则测试已保存的 Cookie。
+        同步日志出现「WAF 拦截」时，点「自动获取」即可：容器直接向站点换取带
+        当前出口 IP 的新 Cookie 并保存（站点校验是 JS 挑战页，不需要人工拖滑块）。
+        也可以手动粘贴：浏览器打开 2bt0.com，复制 ge_js_validator_18 填到输入框，
+        保存后立即生效、无需重启。点「测试」会真实请求一次列表接口，输入框留空
+        则测试已保存的 Cookie。
       </p>
     </div>`;
+  box.querySelector("#waf-cookie-renew").addEventListener("click", renewWafCookie);
   box.querySelector("#waf-cookie-save").addEventListener("click", saveWafCookie);
   box.querySelector("#waf-cookie-test").addEventListener("click", testWafCookie);
+}
+
+async function renewWafCookie() {
+  const box = el["waf-card"];
+  const btn = box.querySelector("#waf-cookie-renew");
+  const out = box.querySelector("#waf-test-result");
+  btn.disabled = true;
+  out.textContent = "正在容器内自动换取 Cookie…";
+  try {
+    const res = await fetch("/api/bt0cookie/renew", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast(data.success ? "已自动获取新 Cookie" : "自动获取失败");
+    await loadWafCookie(); // 重渲染显示新掩码与来源
+    const out2 = el["waf-card"].querySelector("#waf-test-result");
+    if (out2) out2.textContent = data.message || (data.success ? "已自动获取" : "获取失败");
+  } catch (err) {
+    out.textContent = `自动获取失败：${err.message}`;
+    showToast(`自动获取失败：${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function testWafCookie() {
