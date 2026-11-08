@@ -571,9 +571,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .card-title {
   font-weight: 600;
   font-size: 15px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* 种子名很长且无空格，必须允许任意位置断行才能完整显示 */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .card-meta {
@@ -1160,12 +1161,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   /* 版本卡片改成竖排，操作按钮独占一行 */
   .card { flex-direction: column; align-items: flex-start; gap: 12px; }
   .card-actions { width: 100%; }
-  /* 种子名很长，手机上给两行再截断 */
+  /* 种子名完整显示，不再截断 */
   .card-title {
     white-space: normal;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
   }
 
   /* 海报墙固定两列：自适应在手机上会剩 1 列，图会大得离谱 */
