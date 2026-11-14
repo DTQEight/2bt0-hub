@@ -317,9 +317,13 @@ class SyncManager:
                 # 确认抓到板块真正末页：标记完成并清除断点，下次运行自动转增量更新
                 set_sync_done("bt0", section)
                 clear_sync_progress("bt0", section)
-                self.state["message"] = "全量同步完成"
-                logger.info("%s 全量同步完成：抓到第 %d 页，本次共 %d 条",
-                            label, self.state["page"], self.state["fetched"])
+                # 增量模式走到末页只是"扫了一遍"，不代表全量抓完，别报"全量完成"
+                self.state["message"] = ("已扫到末页（第 %d 页），本次新增 %d 条"
+                                         % (self.state["page"], new_total)
+                                         if mode == "update" else "全量同步完成")
+                logger.info("%s %s：抓到第 %d 页，本次共 %d 条",
+                            label, "增量扫描完成" if mode == "update" else "全量同步完成",
+                            self.state["page"], self.state["fetched"])
             elif self.state.get("needs_verify"):
                 # 撞验证码不属于异常：保留 gate_page，验证通过后从那一页续抓
                 logger.warning("%s 同步已暂停在第 %d 页，等待图形验证码",
@@ -405,7 +409,9 @@ class SyncManager:
         # 中途崩溃/重启，断点回退会让重启后大面积重抓
         if mode != "update" and write_progress:
             set_sync_progress("bt0", sc, page)
-        if page % 10 == 0 or len(rows) < 20:
+        if page % 10 == 0 or len(rows) < 20 or mode == "update":
+            # 增量模式逐页打印：页数少，而且用户需要看到"确实过了这一页"，
+            # 否则 4 并发一次性拉完后只在第 10/20 页各打一行，看起来像跳页
             logger.info("%s 第 %d 页完成，本次已抓 %d 条%s", label, page,
                         self.state["fetched"],
                         f"，新增 {new_count}" if mode == "update" else "")

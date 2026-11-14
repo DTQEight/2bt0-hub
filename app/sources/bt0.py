@@ -295,7 +295,9 @@ def verify_gate(key: str, code: str) -> dict:
         _ACCESS_TOKEN = token
         logger.info("2bt0 验证通过，已取得访客令牌（尾号 %s）", token[-8:])
     else:
-        logger.warning("2bt0 验证接口未返回 access_token，额度可能不会恢复")
+        # 实测验证本身就是主要解锁手段（服务端按 IP 记额度），token 只是顺带；
+        # 没返回也不影响继续同步
+        logger.debug("2bt0 验证接口未返回 access_token，按验证通过继续")
     return d
 
 
