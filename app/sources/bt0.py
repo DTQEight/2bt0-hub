@@ -72,6 +72,12 @@ class ViewGateRequired(SourceError):
     """匿名查看磁力满 50 次，站点要求先通过图形验证码（对公网 IP 生效）。"""
 
 
+# 过验证码后站点会下发一个临时 access_token（访客令牌），前端拿到后
+# 会带在后续请求上（query 参数 + Authorization 头）。只认「验证过」而不带
+# 这个 token 的话，额度不会恢复——实测验证成功后立刻又被拦就是这个原因。
+_ACCESS_TOKEN = ""
+
+
 # 站点对同一 IP 的放行名额是全局共享的（一次挑战、一次放行），并发请求
 # 会让线程互相抢名额并陷入「一直被拦」。所有 API 请求串行执行。
 _REQ_LOCK = threading.Lock()
@@ -178,20 +184,24 @@ def api_get(endpoint: str, params: dict | None = None,
     with _REQ_LOCK:
         while True:
             try:
+                token = _ACCESS_TOKEN
+                auth = {**HEADERS, "Authorization": f"Bearer {token}"} if token else HEADERS
                 if method == "POST":
                     r = SESSION.post(
                         f"{API}/{endpoint}",
-                        params={**APP_PARAMS},
+                        params={**APP_PARAMS, **({"access_token": token} if token else {})},
                         json=data or {},
-                        headers={**HEADERS, "Content-Type": "application/json"},
+                        headers={**auth, "Content-Type": "application/json"},
                         timeout=(15, 45),
                         verify=False,
                     )
                 else:
                     r = SESSION.get(
                         f"{API}/{endpoint}",
-                        params={**APP_PARAMS, **(params or {})},
-                        headers=HEADERS,
+                        params={**APP_PARAMS,
+                                **({"access_token": token} if token else {}),
+                                **(params or {})},
+                        headers=auth,
                         timeout=(15, 45),
                         verify=False,  # 该站证书链不完整
                     )
@@ -269,12 +279,24 @@ def gate_captcha() -> dict:
     }
 
 
-def verify_gate(key: str, code: str) -> None:
-    """提交图形验证码。失败抛 SourceError（文案即站点返回的错误）。"""
+def verify_gate(key: str, code: str) -> dict:
+    """提交图形验证码。失败抛 SourceError（文案即站点返回的错误）。
+
+    成功时站点会下发 access_token（访客令牌），后续请求必须带上它，额度才
+    真正恢复——只「验证过」而不带 token，站点仍按额度满算，立刻再拦。
+    """
+    global _ACCESS_TOKEN
     if not key or not code:
         raise SourceError("验证码 key / code 不能为空")
-    api_get("verifyMovieView", method="POST",
-            data={"key": key, "code": (code or "").strip()})
+    d = api_get("verifyMovieView", method="POST",
+                data={"key": key, "code": (code or "").strip()})
+    token = (d.get("access_token") or "").strip()
+    if token:
+        _ACCESS_TOKEN = token
+        logger.info("2bt0 验证通过，已取得访客令牌（尾号 %s）", token[-8:])
+    else:
+        logger.warning("2bt0 验证接口未返回 access_token，额度可能不会恢复")
+    return d
 
 
 def magnet_by_view(seed_id: str) -> str:

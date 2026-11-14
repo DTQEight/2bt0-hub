@@ -563,8 +563,10 @@ async def bt0_gate_verify(body: dict) -> dict:
     if st.get("needs_verify") and not st.get("running"):
         # 同步当时卡在验证码上：验证一过就自动续抓，省得再点一次
         try:
-            sync_manager.start(st.get("section") or 1, mode="update")
-            return {"success": True, "message": "验证通过，已自动继续同步"}
+            sync_manager.start(st.get("section") or 1, mode="update",
+                               start_page=st.get("gate_page"))
+            return {"success": True, "message": "验证通过，已从第 "
+                    f"{st.get('gate_page') or 1} 页继续同步"}
         except (ValueError, RuntimeError) as exc:
             logger.info("验证后自动续抓未启动：%s", exc)
     return {"success": True, "message": "验证通过，可以继续同步了"}

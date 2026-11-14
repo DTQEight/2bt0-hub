@@ -107,6 +107,7 @@ class SyncManager:
             "speed_ppm": 0.0,  # 页/分钟
             "eta_seconds": None,
             "needs_verify": False,  # 撞上图形验证码，等人工过验证
+            "gate_page": None,      # 撞验证码时正在抓的页，验证通过后从这页续抓
         }
 
     # ---- 对外接口 ----
@@ -131,7 +132,11 @@ class SyncManager:
         done = get_sync_done("bt0")
         if mode == "update" and section not in done:
             raise ValueError("该板块尚未完成全量同步，请先执行全量同步")
-        if start_page is not None:
+        if start_page is not None and mode == "update":
+            # 增量模式也能指定起始页：撞验证码暂停后，验证通过直接从那一页续抓，
+            # 不必总是从第 1 页重扫（虽然已入库的不消耗额度，但白跑一遍很慢）
+            page = max(1, start_page)
+        elif start_page is not None:
             auto_mode, page = "full", max(1, start_page)
         else:
             progress = get_sync_progress("bt0")
@@ -149,7 +154,7 @@ class SyncManager:
             running=True, section=section, mode=mode,
             page=page, fetched=0, message="",
             total_pages=0, speed_ppm=0.0, eta_seconds=None,
-            needs_verify=False,
+            needs_verify=False, gate_page=None,
         )
         self._thread = threading.Thread(
             target=self._run, args=(section, page, workers, mode), daemon=True)
@@ -239,15 +244,9 @@ class SyncManager:
                                 break
                             continue
                         empty_streak = 0
-                        # 入库前先看这批 hash 里有多少条 movie_id 还空着：
-                        # upsert 会用站点新字段补上，所以必须在 _save 之前查
-                        repaired = 0
-                        if mode == "update":
-                            hs = [_hash_of((r.get("zlink") or "").strip()) for r in rows]
-                            repaired = blank_movie_id_count(hs)
-                            repaired_total += repaired
-                        new_count = self._save(section, p, rows, mode)
+                        new_count, repaired = self._save(section, p, rows, mode)
                         new_total += max(0, new_count)
+                        repaired_total += repaired
                         # 增量模式：连续 EARLY_STOP_PAGES 页既无新资源、也没有
                         # 待修复的 movie_id → 已追平。待修复页也算进展，否则
                         # 站点改字段后增量会在第 10 页就收工，后面的空值永远补不上
@@ -279,7 +278,7 @@ class SyncManager:
                         still_failed.append(p)
                         continue
                     new_total += max(0, self._save(section, p, rows, mode,
-                                                   write_progress=False))
+                                                   write_progress=False)[0])
                 if mode != "update":
                     set_sync_progress("bt0", section, top)
                     self.state["page"] = top
@@ -290,10 +289,11 @@ class SyncManager:
                                    "…" if len(still_failed) > 8 else "")
         except ViewGateRequired as exc:
             # 匿名查看磁力额度用完：保留断点，人工过验证码后重跑即可续抓
+            gp = self.state.get("gate_page")
             self.state["needs_verify"] = True
-            self.state["message"] = f"需要图形验证码（已到第 {self.state['page']} 页）"
-            logger.warning("%s 同步暂停：%s。在网页「同步」页完成验证后重新同步即可续抓",
-                           label, exc)
+            self.state["message"] = f"需要图形验证码（已到第 {gp or self.state['page']} 页）"
+            logger.warning("%s 同步暂停：%s。在网页「同步」页完成验证后会自动从第 %s 页续抓",
+                           label, exc, gp or self.state["page"])
         except Exception as exc:  # 兜底：任何异常都不能让线程僵死在 running 状态
             self.state["message"] = f"同步异常终止: {exc}"
             logger.exception("%s 同步异常终止", label)
@@ -320,6 +320,10 @@ class SyncManager:
                 self.state["message"] = "全量同步完成"
                 logger.info("%s 全量同步完成：抓到第 %d 页，本次共 %d 条",
                             label, self.state["page"], self.state["fetched"])
+            elif self.state.get("needs_verify"):
+                # 撞验证码不属于异常：保留 gate_page，验证通过后从那一页续抓
+                logger.warning("%s 同步已暂停在第 %d 页，等待图形验证码",
+                               label, self.state.get("gate_page") or self.state["page"])
             else:
                 # 网络异常 / 连续失败 / 未知异常终止：保留断点，绝不标记完成
                 logger.warning("%s 同步未完成即终止（断点已保留在第 %d 页）：%s",
@@ -356,26 +360,43 @@ class SyncManager:
         # 已入库的直接复用库里的磁力，额度全留给新资源
         known = magnet_map_for_dates([r.get("eztime") or "" for r in rows])
         items = []
-        for r in rows:
-            title = r.get("zname") or r.get("title") or ""
-            magnet = (r.get("zlink") or "").strip()
-            if not magnet.startswith("magnet:"):
-                magnet = known.get(title) or magnet_by_view(str(r.get("id") or ""))
-            items.append({
-                "magnet": magnet,
-                "title": title,
-                "size": r.get("zsize") or "",
-                "published_at": r.get("eztime") or "",
-                "category": label,
-                "detail_url": BASE + r["aurl"] if r.get("aurl") else "",
-                "extra": movie_ref(r),
-            })
+        try:
+            for r in rows:
+                title = r.get("zname") or r.get("title") or ""
+                magnet = (r.get("zlink") or "").strip()
+                if not magnet.startswith("magnet:"):
+                    magnet = known.get(title) or magnet_by_view(str(r.get("id") or ""))
+                if not magnet:
+                    continue
+                items.append({
+                    "magnet": magnet,
+                    "title": title,
+                    "size": r.get("zsize") or "",
+                    "published_at": r.get("eztime") or "",
+                    "category": label,
+                    "detail_url": BASE + r["aurl"] if r.get("aurl") else "",
+                    "extra": movie_ref(r),
+                })
+        except ViewGateRequired:
+            # 额度刚好在本页用完：已经花额度取到的部分先入库，
+            # 不然这几十次查看就白费了；页码记下来，验证后从这页续抓
+            self.state["gate_page"] = page
+            if items:
+                try:
+                    upsert_items("bt0", items)
+                    self.state["page"] = page
+                except Exception:
+                    logger.exception("%s 第 %d 页部分入库失败", label, page)
+            raise
+        repaired = 0
+        if mode == "update" and items:
+            repaired = blank_movie_id_count([_hash_of(i["magnet"]) for i in items])
         try:
             new_count = upsert_items("bt0", items)
         except Exception as exc:
             self.state["message"] = f"第 {page} 页入库失败: {exc}"
             logger.exception("%s 第 %d 页入库失败", label, page)
-            return -1
+            return -1, 0
         self.state["page"] = page
         self.state["fetched"] += len(rows)
         self._samples.append((time.monotonic(), page))  # 速度采样
@@ -388,7 +409,7 @@ class SyncManager:
             logger.info("%s 第 %d 页完成，本次已抓 %d 条%s", label, page,
                         self.state["fetched"],
                         f"，新增 {new_count}" if mode == "update" else "")
-        return new_count
+        return new_count, repaired
 
 
 sync_manager = SyncManager()
