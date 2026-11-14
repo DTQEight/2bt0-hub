@@ -73,7 +73,7 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "sort-select", "sort-by",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
-  "api-card", "waf-card", "gate-card",
+  "api-card", "waf-card", "gate-card", "wecom-card",
   "sync-badge", "sync-badge-text", "sync-stop", "toast",
   "cloud115-view",
   "c115-cookie", "c115-save-cookie", "c115-verify", "c115-cookie-status",
@@ -192,6 +192,7 @@ function activateTab() {
       loadApiKey();
       loadWafCookie();
       loadGateCard();
+      loadWecomCard();
     } else {
       applySearchbar();
       load();
@@ -1473,6 +1474,142 @@ async function submitGateCode() {
     loadGateCard();
   } catch (err) {
     out.textContent = `验证失败：${err.message}`;
+  }
+}
+
+// ---- 企业微信：验证码自动推送（撞验证码时推图，企微里回复数字自动续抓）----
+// 配置字段除企业 ID/AgentId/接收人外只回掩码；输入框留空表示保持原值
+async function loadWecomCard() {
+  const box = el["wecom-card"];
+  if (!box) return;
+  let d = {};
+  try {
+    const res = await fetch("/api/wecom/config");
+    d = await res.json();
+    if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
+  } catch (e) {
+    box.innerHTML = `<div class="panel api-panel">
+        <h3>企业微信推送</h3>
+        <p class="api-hint">${escapeHtml(e.message)}</p>
+      </div>`;
+    return;
+  }
+  const status = d.configured ? "已配置" : "未配置（撞验证码时不会推送）";
+  const pending = d.gate_pending
+    ? `　待验证：第 ${d.gate_page || "?"} 页，可点「推送验证码」重发一张。` : "";
+  box.innerHTML = `<div class="panel api-panel">
+      <h3>企业微信推送（图形验证码）</h3>
+      <p class="api-hint">${status}${pending}</p>
+      <div class="api-row">
+        <span class="api-label">企业 ID</span>
+        <input id="wecom-corpid" autocomplete="off" placeholder="ww 开头"
+               value="${escapeHtml(d.corpid || "")}" />
+      </div>
+      <div class="api-row">
+        <span class="api-label">应用 Secret</span>
+        <input id="wecom-secret" type="password" autocomplete="off"
+               placeholder="${d.has_secret ? `已保存 ${escapeHtml(d.secret_masked)}` : "应用 Secret"}" />
+      </div>
+      <div class="api-row">
+        <span class="api-label">AgentId</span>
+        <input id="wecom-agentid" autocomplete="off" placeholder="应用 AgentId"
+               value="${escapeHtml(d.agentid || "")}" />
+      </div>
+      <div class="api-row">
+        <span class="api-label">回调 Token</span>
+        <input id="wecom-token" type="password" autocomplete="off"
+               placeholder="${d.has_token ? `已保存 ${escapeHtml(d.token_masked)}` : "接收消息 Token"}" />
+      </div>
+      <div class="api-row">
+        <span class="api-label">EncodingAESKey</span>
+        <input id="wecom-aeskey" type="password" autocomplete="off" maxlength="43"
+               placeholder="${d.has_aeskey ? `已保存 ${escapeHtml(d.aeskey_masked)}` : "43 位"}" />
+      </div>
+      <div class="api-row">
+        <span class="api-label">接收人</span>
+        <input id="wecom-touser" autocomplete="off" placeholder="@all"
+               value="${escapeHtml(d.touser || "@all")}" />
+      </div>
+      <div class="api-row">
+        <span class="api-label">旧回调转发</span>
+        <input id="wecom-forward" autocomplete="off"
+               placeholder="可选：非验证码消息转给旧服务，如 115transfer"
+               value="${escapeHtml(d.forward_url || "")}" />
+      </div>
+      <div class="api-row">
+        <button type="button" class="act" id="wecom-save">保存</button>
+        <button type="button" class="act" id="wecom-test">测试推送</button>
+        <button type="button" class="act" id="wecom-gate">推送验证码</button>
+      </div>
+      <p class="api-hint" id="wecom-result"></p>
+      <p class="api-hint">
+        在企微应用「接收消息」里填 <code>${escapeHtml(location.origin + "/wechat/callback")}</code>
+        （手机/内网地址企微服务器回连不到，需公网可访问）。同步撞验证码时会自动
+        推送验证码图片，直接在企微里回复图中数字即可自动验证并从断点续抓。
+        验证码过期会重新推一张；也可随时点「推送验证码」手动重发。
+        若这里复用了 115transfer 的企业微信应用，把它的回调地址填到「旧回调转发」，
+        非验证码消息会原样转过去，115transfer 的机器人不受影响。
+      </p>
+    </div>`;
+  box.querySelector("#wecom-save").addEventListener("click", saveWecomConfig);
+  box.querySelector("#wecom-test").addEventListener("click", testWecom);
+  box.querySelector("#wecom-gate").addEventListener("click", pushWecomGate);
+}
+
+function _wecomForm() {
+  const box = el["wecom-card"];
+  const val = (sel) => (box.querySelector(sel)?.value || "").trim();
+  return {
+    corpid: val("#wecom-corpid"),
+    corpsecret: val("#wecom-secret"),
+    agentid: val("#wecom-agentid"),
+    token: val("#wecom-token"),
+    aeskey: val("#wecom-aeskey"),
+    touser: val("#wecom-touser"),
+    forward_url: val("#wecom-forward"),
+  };
+}
+
+async function saveWecomConfig() {
+  const out = el["wecom-card"].querySelector("#wecom-result");
+  try {
+    const res = await fetch("/api/wecom/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(_wecomForm()),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast(data.message || "企业微信配置已保存");
+    await loadWecomCard();
+  } catch (err) {
+    out.textContent = `保存失败：${err.message}`;
+  }
+}
+
+async function testWecom() {
+  const out = el["wecom-card"].querySelector("#wecom-result");
+  out.textContent = "正在发送测试消息…";
+  try {
+    const res = await fetch("/api/wecom/test", { method: "POST" });
+    const data = await res.json();
+    out.textContent = data.message || (data.success ? "发送成功" : "发送失败");
+    showToast(data.success ? "测试消息已发送" : "测试发送失败");
+  } catch (err) {
+    out.textContent = `测试失败：${err.message}`;
+  }
+}
+
+async function pushWecomGate() {
+  const out = el["wecom-card"].querySelector("#wecom-result");
+  out.textContent = "正在获取并推送验证码…";
+  try {
+    const res = await fetch("/api/wecom/gate", { method: "POST" });
+    const data = await res.json();
+    out.textContent = data.message || (data.success ? "验证码已推送" : "推送失败");
+    showToast(data.success ? "验证码已推送到企业微信" : "推送失败");
+  } catch (err) {
+    out.textContent = `推送失败：${err.message}`;
   }
 }
 

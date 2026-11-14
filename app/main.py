@@ -8,9 +8,12 @@ import logging.handlers
 import math
 import os
 import re
+import requests
 import threading
 import time
+import urllib3
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
@@ -18,9 +21,10 @@ from fastapi.staticfiles import StaticFiles
 
 from api_auth import (api_key_for_admin, get_api_key, is_public_api_path,
                       require_api_key)
-from db import (filter_options, get_movie, get_setting, get_sync_progress,
-                init_db, magnet_by_hash, magnets_for_movie, query_groups,
-                query_items, quality_counts, set_setting, upsert_items)
+from db import (filter_options, get_movie, get_setting, get_sync_done,
+                get_sync_progress, init_db, magnet_by_hash, magnets_for_movie,
+                query_groups, query_items, quality_counts, search_items,
+                set_setting, upsert_items)
 import quality
 from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
@@ -31,6 +35,7 @@ from sources.bt0 import (SECTIONS, gate_captcha, get_cookie, set_cookie,
 from sync import sync_manager
 import cloud115
 import transfer_history
+import wecom
 from crypto_utils import encrypt
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
@@ -53,6 +58,7 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("resource-hub")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 init_db()  # 本地磁力库建表
 # 对外 API 密钥：首次启动生成并打印一次到日志（之后从库里读，不重复打印）
@@ -559,17 +565,450 @@ async def bt0_gate_verify(body: dict) -> dict:
     except Exception as exc:
         return {"success": False, "message": f"验证失败: {exc}"}
     logger.info("2bt0 图形验证码已通过（匿名查看额度已恢复）")
+    sync_manager.state["gate_key"] = ""
+    return _resume_after_gate()
+
+
+def _resume_after_gate() -> dict:
+    """验证通过后：若同步正卡在验证码上，自动从那一页续抓。
+
+    网页输入与企业微信回复共用这一条路径。手动推送验证码（同步并未卡住）
+    没有 gate_page，此时按增量更新从第 1 页起跑，避免验证完还要手动点同步。
+    """
     st = sync_manager.state
     gp = st.get("gate_page")  # 必须在 start() 之前取：start 会把 gate_page 重置为 None
     if st.get("needs_verify") and not st.get("running"):
-        # 同步当时卡在验证码上：验证一过就自动续抓，省得再点一次
+        # 全量/续抓卡在验证码上时不能强制 update（该板块可能还没完成全量），
+        # 交给 start() 按断点自动选 full / resume
+        resume_mode = "update" if st.get("mode") == "update" else None
         try:
-            sync_manager.start(st.get("section") or 1, mode="update", start_page=gp)
+            sync_manager.start(st.get("section") or 1, mode=resume_mode, start_page=gp)
             return {"success": True,
                     "message": f"验证通过，已从第 {gp or 1} 页继续同步"}
         except (ValueError, RuntimeError) as exc:
             logger.info("验证后自动续抓未启动：%s", exc)
+
+    sec = st.get("manual_gate_section")
+    if sec and not st.get("running"):
+        st["manual_gate_section"] = None
+        try:
+            sync_manager.start(int(sec), mode="update", start_page=1)
+            return {"success": True,
+                    "message": f"验证通过，已开始{SECTIONS.get(int(sec), '')}增量更新"}
+        except ValueError:
+            # 该板块还没完成全量，退回自动模式（有断点续抓 / 否则全量）
+            try:
+                sync_manager.start(int(sec))
+                return {"success": True,
+                        "message": f"验证通过，已开始{SECTIONS.get(int(sec), '')}同步"}
+            except (ValueError, RuntimeError) as exc:
+                return {"success": True, "message": f"验证通过，但自动同步未启动：{exc}"}
+        except RuntimeError:
+            return {"success": True, "message": "验证通过，同步已在进行中"}
     return {"success": True, "message": "验证通过，可以继续同步了"}
+
+
+# ---- 企业微信：配置 / 测试 / 验证码推送 / 回调 ----
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    return (value[:2] + "****" + value[-2:]) if len(value) > 8 else "****"
+
+
+@app.get("/api/wecom/config")
+async def wecom_config_view() -> dict:
+    """企业微信配置（secret 类字段只回掩码，不回明文）"""
+    cfg = wecom.load_config()
+    st = sync_manager.state
+    return {
+        "corpid": cfg["corpid"],
+        "agentid": cfg["agentid"],
+        "touser": cfg["touser"],
+        "has_secret": bool(cfg["corpsecret"]),
+        "secret_masked": _mask_secret(cfg["corpsecret"]),
+        "has_token": bool(cfg["token"]),
+        "token_masked": _mask_secret(cfg["token"]),
+        "has_aeskey": bool(cfg["aeskey"]),
+        "aeskey_masked": _mask_secret(cfg["aeskey"]),
+        "forward_url": cfg["forward_url"],
+        "configured": wecom.is_configured(cfg),
+        "gate_pending": bool(st.get("gate_key")),
+        "gate_page": st.get("gate_page"),
+    }
+
+
+@app.post("/api/wecom/config")
+async def wecom_config_save(body: dict) -> dict:
+    """保存企业微信配置。secret 类字段留空表示保持原值。"""
+    cfg = wecom.save_config(body)
+    logger.info("企业微信配置已更新（corpid=%s, agentid=%s）",
+                _mask_secret(cfg["corpid"]), cfg["agentid"])
+    return {"success": True, "message": "企业微信配置已保存",
+            "configured": wecom.is_configured(cfg)}
+
+
+@app.post("/api/wecom/test")
+async def wecom_test() -> dict:
+    """发送一条测试文本，验证配置是否可用"""
+    ok, msg = await asyncio.to_thread(
+        wecom.send_text, "【2bt0 资源库】企业微信推送测试成功。")
+    return {"success": ok, "message": msg}
+
+
+@app.post("/api/wecom/menu")
+async def wecom_menu() -> dict:
+    """安装默认自定义菜单（同步 / 状态 / 帮助）"""
+    ok, msg = await asyncio.to_thread(wecom.create_menu)
+    return {"success": ok, "message": msg}
+
+
+@app.post("/api/wecom/gate")
+async def wecom_push_gate() -> dict:
+    """手动把当前图形验证码推送到企业微信（验证码过期时可重新推一张）"""
+    if not wecom.is_configured():
+        return {"success": False, "message": "请先配置企业微信"}
+    try:
+        cap = await asyncio.to_thread(gate_captcha)
+    except Exception as exc:
+        return {"success": False, "message": f"获取验证码失败: {exc}"}
+    key = cap.get("key") or ""
+    if not key:
+        return {"success": False, "message": "站点未返回验证码"}
+    st = sync_manager.state
+    st["gate_key"] = key
+    # 记住板块：手动推送的验证码通过后自动起一次增量更新（没有真实断点页）
+    st["manual_gate_section"] = st.get("section") or 1
+    ok, msg = await asyncio.to_thread(
+        wecom.notify_captcha, SECTIONS.get(st.get("section"), ""),
+        st.get("gate_page") or st.get("page") or 1, cap)
+    return {"success": ok, "message": msg}
+
+
+def _wecom_crypto(cfg: dict):
+    """按配置构造回调加解密器；未配置完整时返回 (None, 错误文案)"""
+    token, aeskey, corpid = cfg["token"], cfg["aeskey"], cfg["corpid"]
+    if not token or not aeskey or not corpid:
+        return None, "未配置企业微信 Token / EncodingAESKey / 企业 ID"
+    try:
+        return wecom.WeChatCrypto(token, aeskey, corpid), ""
+    except ValueError as exc:
+        return None, str(exc)
+
+
+@app.get("/wechat/callback")
+async def wecom_callback_verify(request: Request) -> PlainTextResponse:
+    """企业微信后台「接收消息」URL 校验：验签后原样返回解密的 echostr"""
+    crypto, err = _wecom_crypto(wecom.load_config())
+    if not crypto:
+        return PlainTextResponse(err, status_code=500)
+    q = request.query_params
+    signature = q.get("msg_signature") or q.get("signature") or ""
+    timestamp, nonce, echostr = q.get("timestamp", ""), q.get("nonce", ""), q.get("echostr", "")
+    if not signature or not timestamp or not nonce:
+        return PlainTextResponse("success")
+    if not crypto.verify_signature(signature, timestamp, nonce, echostr):
+        logger.warning("企业微信回调 URL 校验：签名不匹配")
+        return PlainTextResponse("签名验证失败", status_code=403)
+    try:
+        plain, _ = crypto.decrypt_message(echostr)
+        return PlainTextResponse(plain)
+    except Exception:
+        logger.exception("企业微信回调 URL 校验：echostr 解密失败")
+        return PlainTextResponse("解密失败", status_code=403)
+
+
+@app.post("/wechat/callback")
+async def wecom_callback_message(request: Request) -> PlainTextResponse:
+    """接收企业微信消息：回复的数字即图形验证码，校验通过后自动续抓。
+
+    校验要访问 2bt0，可能超过企微的 5 秒回调超时，所以先回「收到」，
+    结果再用应用消息推回给发送人。
+    """
+    cfg = wecom.load_config()
+    crypto, err = _wecom_crypto(cfg)
+    if not crypto:
+        return PlainTextResponse(err, status_code=500)
+
+    q = request.query_params
+    signature = q.get("msg_signature") or q.get("signature") or ""
+    timestamp, nonce = q.get("timestamp", ""), q.get("nonce", "")
+    raw = await request.body()
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(raw)
+        encrypted = root.findtext("Encrypt") or ""
+    except Exception:
+        logger.warning("企业微信回调：XML 解析失败")
+        return PlainTextResponse("success")
+    if not signature or not crypto.verify_signature(signature, timestamp, nonce, encrypted):
+        logger.warning("企业微信回调：签名不匹配")
+        return PlainTextResponse("签名验证失败", status_code=403)
+    try:
+        plain, from_user = crypto.decrypt_message(encrypted) if encrypted else \
+            (raw.decode("utf-8", "replace"), "")
+    except Exception:
+        logger.exception("企业微信回调：消息解密失败")
+        return PlainTextResponse("success")
+
+    msg = wecom.parse_message(plain) or {}
+    user = msg.get("FromUserName") or from_user
+    corp = msg.get("ToUserName") or cfg["corpid"]
+    content = (msg.get("Content") or "").strip()
+
+    search_reply = (_handle_search_text(content, user)
+                    if msg.get("MsgType") == "text" else None)
+    if search_reply:
+        reply = search_reply
+    elif msg.get("MsgType") == "event" and msg.get("Event") == "click":
+        key = (msg.get("EventKey") or "").strip()
+        threading.Thread(target=_handle_menu_event, args=(key, user),
+                         name="wecom-menu", daemon=True).start()
+        reply = "收到，正在处理…"
+    elif msg.get("MsgType") == "text" and re.fullmatch(r"[A-Za-z0-9]{4,6}", content):
+        threading.Thread(target=_handle_gate_code, args=(content, user),
+                         name="wecom-gate-code", daemon=True).start()
+        reply = f"收到验证码 {content}，正在校验…"
+    else:
+        # 非验证码消息（115transfer 的指令/菜单回调）原样转回旧回调，
+        # 两个服务共用同一个企微应用，转发后对方的机器人照常工作
+        forwarded = await _forward_wecom(request, raw, cfg, signature, timestamp, nonce)
+        if forwarded is not None:
+            return forwarded
+        reply = ("直接回复图中验证码字符（字母/数字，4-6 位）；\n"
+                 "要搜片请发：搜 片名")
+    return PlainTextResponse(
+        wecom.build_reply_xml(user, corp, reply, crypto),
+        media_type="application/xml")
+
+
+async def _forward_wecom(request: Request, raw: bytes, cfg: dict,
+                         signature: str, timestamp: str, nonce: str):
+    """把非验证码消息原样转发给旧回调（默认 115transfer 的 /wechat/callback）。
+
+    Token / EncodingAESKey 相同，转发 query + 原始密文即可，对方验签照常通过。
+    未配置 forward_url 时返回 None（走默认的「请回复验证码」提示）。
+    """
+    url = (cfg.get("forward_url") or "").strip()
+    if not url:
+        return None
+    own = urlparse(url)
+    if (own.path.rstrip("/") == "/wechat/callback"
+            and own.netloc.lower() == request.headers.get("host", "").lower()):
+        return None  # 防自转发死循环（同域名同路径，不论 http/https）
+    try:
+        resp = await asyncio.to_thread(
+            requests.post, url,
+            params={"msg_signature": signature, "timestamp": timestamp, "nonce": nonce},
+            data=raw,
+            headers={"Content-Type": request.headers.get(
+                "content-type", "application/xml")},
+            # 旧回调常在 frp 隧道后面，证书是自签的；消息本身是 AES 密文，
+            # 且签名在对方还会再校验一次，这里跳过证书校验换取可用性
+            verify=False,
+            timeout=4)
+    except Exception as exc:
+        logger.warning("企业微信消息转发失败（%s）：%s", url, exc)
+        return None
+    logger.info("企业微信非验证码消息已转发到旧回调：%s", url)
+    return Response(content=resp.content, status_code=resp.status_code,
+                    media_type=resp.headers.get("content-type", "application/xml"))
+
+
+def _handle_gate_code(code: str, to_user: str) -> None:
+    """后台校验企业微信回复的验证码：成功续抓，失败换一张重新推送。"""
+    st = sync_manager.state
+    key = st.get("gate_key") or ""
+    if not key:
+        wecom.send_text("当前没有等待验证的图形验证码。可在网页「同步」页手动获取，"
+                        "或等下次同步撞上验证码时自动推送。", to_user)
+        return
+    try:
+        verify_gate(key, code)
+    except Exception as exc:
+        logger.warning("企业微信回复的验证码 %s 未通过：%s", code, exc)
+        wecom.send_text(f"验证码 {code} 未通过：{exc}\n已换一张，请回复新图中的字符。",
+                        to_user)
+        try:
+            cap = gate_captcha()
+            st["gate_key"] = cap.get("key") or ""
+            if cap.get("key"):
+                wecom.notify_captcha(SECTIONS.get(st.get("section"), ""),
+                                     st.get("gate_page") or st.get("page") or 1,
+                                     cap, to_user=to_user)
+        except Exception:
+            logger.exception("重新推送验证码失败")
+        return
+
+    logger.info("企业微信回复的验证码已通过（发送人 %s）", to_user or "-")
+    st["gate_key"] = ""
+    result = _resume_after_gate()
+    wecom.send_text(f"2bt0 验证通过：{result['message']}", to_user)
+
+
+_MENU_HELP = (
+    "【2bt0 使用说明】\n"
+    "· 搜片：直接发「搜 片名」，如：搜 沙丘（回复数字翻页，0 结束）\n"
+    "· 菜单「同步」：电影/电视剧增量更新、停止同步\n"
+    "· 菜单「状态」：同步进度、库存统计、重新推送验证码\n"
+    "· 同步撞到图形验证码时自动推送 captcha.gif，直接回复图中字符即可\n"
+    "· 验证通过后会自动从断点继续同步"
+)
+
+
+def _status_text() -> str:
+    s = sync_manager.status()
+    mode = {"full": "全量抓取", "resume": "断点续抓",
+            "update": "增量更新"}.get(s.get("mode") or "", s.get("mode") or "-")
+    lines = [
+        "【2bt0 同步状态】",
+        (f"运行中：{s.get('section_label') or '-'} 第 {s.get('page')} 页（{mode}）"
+         if s.get("running") else "未运行"),
+        f"库总量：{s.get('db_total', 0)} 条",
+    ]
+    progress = s.get("progress") or {}
+    if progress:
+        bits = ", ".join(f"{SECTIONS.get(int(k), k)} {v} 页"
+                         for k, v in progress.items())
+        lines.append(f"断点：{bits}")
+    if s.get("message"):
+        lines.append(f"最近：{s['message']}")
+    return "\n".join(lines)
+
+
+def _stats_text() -> str:
+    s = sync_manager.status()
+    cats = "、".join(f"{k} {v}" for k, v in (s.get("by_category") or {}).items()) or "-"
+    return (f"【2bt0 库存】\n总量：{s.get('db_total', 0)} 条\n分类：{cats}\n"
+            f"数据库：{s.get('db_size_mb', 0)} MB\n"
+            f"最近入库：{s.get('last_seen') or '-'}")
+
+
+def _start_update(section: int, to_user: str) -> None:
+    label = SECTIONS.get(section, "")
+    if sync_manager.state.get("running"):
+        wecom.send_text("同步已在进行中，可点菜单「同步 → 停止同步」。", to_user)
+        return
+    if section not in get_sync_done("bt0"):
+        wecom.send_text(f"{label}尚未完成全量同步，请先在网页「同步」页执行全量。",
+                        to_user)
+        return
+    try:
+        sync_manager.start(section, mode="update")
+    except RuntimeError:
+        wecom.send_text("同步已在进行中。", to_user)
+        return
+    wecom.send_text(f"已启动{label}增量更新，完成后会推送结果。", to_user)
+
+
+SEARCH_PAGE_SIZE = 8  # 企微文本消息上限 2048 字节；当前磁力约 60 字，一页 8 条约 1KB
+_SEARCH_SESSIONS: dict = {}  # {userid: {keyword, total, page, ts}}
+_SEARCH_TTL = 600  # 翻页会话有效期（秒）
+
+
+def _search_reply(keyword: str, to_user: str, page: int = 1) -> None:
+    """搜索本地库并发送指定页（每页 4 条，带完整磁力链接）。"""
+    page = max(1, page)
+    try:
+        rows, total = search_items(keyword, SEARCH_PAGE_SIZE,
+                                   (page - 1) * SEARCH_PAGE_SIZE)
+        if total == 0:
+            # 片名没命中时再走 FTS（演职人员 / 别名等）
+            rows, total = query_items(page=page, keyword=keyword,
+                                      page_size=SEARCH_PAGE_SIZE)
+    except Exception as exc:
+        logger.exception("本地库搜索失败：%s", keyword)
+        wecom.send_text(f"搜索失败：{exc}", to_user)
+        return
+    if not rows:
+        if page > 1:
+            wecom.send_text(f"「{keyword}」没有更多结果了。", to_user)
+        else:
+            wecom.send_text(f"本地库没有找到「{keyword}」。\n"
+                            f"可能尚未同步到，可稍后再试或换关键词。", to_user)
+        return
+    pages = max(1, math.ceil(total / SEARCH_PAGE_SIZE))
+    _SEARCH_SESSIONS[to_user] = {"keyword": keyword, "total": total,
+                                 "page": page, "ts": time.time()}
+    lines = [f"【{keyword}】第 {page}/{pages} 页｜共 {total} 条"]
+    start = (page - 1) * SEARCH_PAGE_SIZE
+    for i, r in enumerate(rows, start + 1):
+        name = r["movie_title"] or r["title"] or "（无标题）"
+        lines.append(f"{i}. {name}｜{r['category'] or ''}｜{r['size'] or ''}")
+        lines.append(r["magnet"] or f"magnet:?xt=urn:btih:{r['info_hash']}")
+    if pages > 1:
+        lines.append(f"回复页码翻页（1-{pages}），0 结束；换片发：搜 片名")
+    wecom.send_text(wecom.truncate_reply("\n".join(lines)), to_user)
+
+
+def _handle_search_text(content: str, to_user: str) -> str | None:
+    """处理搜索指令与翻页数字；返回直接回复文本，None 表示不是搜索消息。"""
+    m = re.match(r"^(?:搜索|搜|找)\s*[:：]?\s*(.+)$", content)
+    if m:
+        keyword = m.group(1).strip()
+        if not keyword:
+            return "请发送：搜 片名"
+        threading.Thread(target=_search_reply, args=(keyword, to_user, 1),
+                         name="wecom-search", daemon=True).start()
+        return f"正在搜索「{keyword}」…"
+
+    if not re.fullmatch(r"\d", content):
+        return None
+    sess = _SEARCH_SESSIONS.get(to_user)
+    if not sess:
+        return None
+    if time.time() - sess["ts"] > _SEARCH_TTL:
+        _SEARCH_SESSIONS.pop(to_user, None)
+        return None
+    if content == "0":
+        _SEARCH_SESSIONS.pop(to_user, None)
+        return "已结束搜索。"
+    page = int(content)
+    pages = max(1, math.ceil(sess["total"] / SEARCH_PAGE_SIZE))
+    if page < 1 or page > pages:
+        return f"页码超出范围：共 {pages} 页，回复 1-{pages} 或 0 结束。"
+    threading.Thread(target=_search_reply,
+                     args=(sess["keyword"], to_user, page),
+                     name="wecom-search", daemon=True).start()
+    return f"正在发送第 {page} 页…"
+
+
+def _handle_menu_event(key: str, to_user: str) -> None:
+    """处理企微自定义菜单点击（type=click 的 EventKey）"""
+    st = sync_manager.state
+    try:
+        if key == "sync_update_1":
+            _start_update(1, to_user)
+        elif key == "sync_update_2":
+            _start_update(2, to_user)
+        elif key == "sync_stop":
+            sync_manager.stop()
+            wecom.send_text("已发送停止指令，当前页处理完后停止（断点已保存）。", to_user)
+        elif key == "sync_status":
+            wecom.send_text(_status_text(), to_user)
+        elif key == "stats":
+            wecom.send_text(_stats_text(), to_user)
+        elif key == "captcha":
+            cap = gate_captcha()
+            if not (cap.get("key") or ""):
+                wecom.send_text("站点未返回验证码，请稍后再试。", to_user)
+                return
+            st["gate_key"] = cap["key"]
+            st["manual_gate_section"] = st.get("section") or 1
+            ok, msg = wecom.notify_captcha(
+                SECTIONS.get(st.get("section"), ""),
+                st.get("gate_page") or st.get("page") or 1,
+                cap, to_user=to_user)
+            if not ok:
+                wecom.send_text(f"验证码推送失败：{msg}", to_user)
+        elif key == "search_hint":
+            wecom.send_text("直接发送：搜 片名\n例如：搜 沙丘\n"
+                            "每页 4 条，回复数字翻页，0 结束", to_user)
+        else:
+            wecom.send_text(_MENU_HELP, to_user)
+    except Exception as exc:
+        logger.exception("企业微信菜单指令处理失败：%s", key)
+        wecom.send_text(f"处理失败：{exc}", to_user)
 
 
 @app.get("/api/logs")

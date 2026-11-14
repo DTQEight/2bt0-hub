@@ -637,6 +637,30 @@ def query_items(page: int = 1, keyword: str = "", category: str = "",
     return rows, total
 
 
+def search_items(keyword: str, limit: int = 3, offset: int = 0):
+    """按片名/种子名搜索，标题命中优先（供企业微信搜片用）。
+
+    与 query_items 的 FTS 不同：只匹配 magnets 自身字段，不会因为演职人员
+    同名（如导演 Joshua Oppenheimer）把无关影片排到前面。
+    排序：片名完全一致 → 片名前缀 → 标题包含 → 其余，同组按入库倒序。
+    """
+    kw = (keyword or "").strip()
+    if not kw:
+        return [], 0
+    like, prefix = f"%{kw}%", f"{kw}%"
+    with _db() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM magnets WHERE title LIKE ? OR movie_title LIKE ?",
+            (like, like)).fetchone()[0]
+        rows = conn.execute(
+            "SELECT * FROM magnets WHERE title LIKE ? OR movie_title LIKE ? "
+            "ORDER BY CASE WHEN movie_title = ? THEN 0 "
+            "WHEN movie_title LIKE ? THEN 1 "
+            "WHEN title LIKE ? THEN 2 ELSE 3 END, id DESC LIMIT ? OFFSET ?",
+            (like, like, kw, prefix, like, limit, max(0, offset))).fetchall()
+    return rows, total
+
+
 _STATS_TTL = 15  # 秒：库统计缓存时长（避免高频轮询反复全表扫描）
 _stats_cache: dict = {"t": 0.0, "data": None}
 

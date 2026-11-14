@@ -30,7 +30,7 @@ from db import (_hash_of, blank_movie_id_count, clear_sync_progress,
                 upsert_items)
 from movies import movie_detail_manager
 from sources.bt0 import (BASE, SECTIONS, ViewGateRequired, api_get,
-                         magnet_by_view, movie_ref)
+                         gate_captcha, magnet_by_view, movie_ref)
 
 logger = logging.getLogger("resource-hub.sync")
 
@@ -108,6 +108,8 @@ class SyncManager:
             "eta_seconds": None,
             "needs_verify": False,  # 撞上图形验证码，等人工过验证
             "gate_page": None,      # 撞验证码时正在抓的页，验证通过后从这页续抓
+            "gate_key": "",         # 待验证的验证码 key（企业微信回传字母/数字时用）
+            "manual_gate_section": None,  # 手动推送验证码时的板块，验证后自动起增量
         }
 
     # ---- 对外接口 ----
@@ -154,7 +156,8 @@ class SyncManager:
             running=True, section=section, mode=mode,
             page=page, fetched=0, message="",
             total_pages=0, speed_ppm=0.0, eta_seconds=None,
-            needs_verify=False, gate_page=None,
+            needs_verify=False, gate_page=None, gate_key="",
+            manual_gate_section=None,
         )
         self._thread = threading.Thread(
             target=self._run, args=(section, page, workers, mode), daemon=True)
@@ -170,6 +173,7 @@ class SyncManager:
 
     def status(self) -> dict:
         s = dict(self.state)
+        s.pop("gate_key", None)  # 一次性验证码 key，不向前端暴露
         s["section_label"] = SECTIONS.get(s["section"], "")
         s["progress"] = {str(k): v for k, v in get_sync_progress("bt0").items()}
         s["done"] = get_sync_done("bt0")
@@ -294,6 +298,7 @@ class SyncManager:
             self.state["message"] = f"需要图形验证码（已到第 {gp or self.state['page']} 页）"
             logger.warning("%s 同步暂停：%s。在网页「同步」页完成验证后会自动从第 %s 页续抓",
                            label, exc, gp or self.state["page"])
+            self._push_gate_to_wecom(label, gp or self.state["page"])
         except Exception as exc:  # 兜底：任何异常都不能让线程僵死在 running 状态
             self.state["message"] = f"同步异常终止: {exc}"
             logger.exception("%s 同步异常终止", label)
@@ -355,6 +360,33 @@ class SyncManager:
             movie_detail_manager.start(self.state["section"])
         except (ValueError, RuntimeError) as exc:
             logger.info("影片详情：无需拉取（%s）", exc)
+
+    def _push_gate_to_wecom(self, label: str, page: int) -> None:
+        """把当前图形验证码推送到企业微信（后台线程，不阻塞同步收尾）。
+
+        企业微信里回复的数字由 /wechat/callback 接住，校验通过后自动续抓。
+        未配置企业微信时直接跳过，仍可在网页「同步」页手动过验证。
+        """
+        def work() -> None:
+            try:
+                import wecom
+                if not wecom.is_configured():
+                    return
+                cap = gate_captcha()
+                key = cap.get("key") or ""
+                if not key:
+                    logger.warning("验证码获取失败（key 为空），未能推送到企业微信")
+                    return
+                self.state["gate_key"] = key
+                ok, msg = wecom.notify_captcha(label, page, cap)
+                if ok:
+                    logger.info("验证码已推送到企业微信，等待在企微里回复数字")
+                else:
+                    logger.warning("企业微信验证码推送失败：%s", msg)
+            except Exception:
+                logger.exception("企业微信验证码推送异常（不影响网页手动过验证）")
+
+        threading.Thread(target=work, name="wecom-gate", daemon=True).start()
 
     def _save(self, sc: int, page: int, rows: list[dict], mode: str,
               write_progress: bool = True) -> int:
