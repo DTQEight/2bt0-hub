@@ -559,6 +559,14 @@ async def bt0_gate_verify(body: dict) -> dict:
     except Exception as exc:
         return {"success": False, "message": f"验证失败: {exc}"}
     logger.info("2bt0 图形验证码已通过（匿名查看额度已恢复）")
+    st = sync_manager.state
+    if st.get("needs_verify") and not st.get("running"):
+        # 同步当时卡在验证码上：验证一过就自动续抓，省得再点一次
+        try:
+            sync_manager.start(st.get("section") or 1, mode="update")
+            return {"success": True, "message": "验证通过，已自动继续同步"}
+        except (ValueError, RuntimeError) as exc:
+            logger.info("验证后自动续抓未启动：%s", exc)
     return {"success": True, "message": "验证通过，可以继续同步了"}
 
 
