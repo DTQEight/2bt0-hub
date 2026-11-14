@@ -25,10 +25,12 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 from db import (_hash_of, blank_movie_id_count, clear_sync_progress,
-                get_sync_done, get_sync_progress, get_stats, set_sync_done,
-                set_sync_progress, upsert_items)
+                get_sync_done, get_sync_progress, get_stats,
+                magnet_map_for_dates, set_sync_done, set_sync_progress,
+                upsert_items)
 from movies import movie_detail_manager
-from sources.bt0 import BASE, SECTIONS, api_get, movie_ref
+from sources.bt0 import (BASE, SECTIONS, ViewGateRequired, api_get,
+                         magnet_by_view, movie_ref)
 
 logger = logging.getLogger("resource-hub.sync")
 
@@ -104,6 +106,7 @@ class SyncManager:
             "total_pages": 0,  # 本次探测的板块末页（0=未知）
             "speed_ppm": 0.0,  # 页/分钟
             "eta_seconds": None,
+            "needs_verify": False,  # 撞上图形验证码，等人工过验证
         }
 
     # ---- 对外接口 ----
@@ -146,6 +149,7 @@ class SyncManager:
             running=True, section=section, mode=mode,
             page=page, fetched=0, message="",
             total_pages=0, speed_ppm=0.0, eta_seconds=None,
+            needs_verify=False,
         )
         self._thread = threading.Thread(
             target=self._run, args=(section, page, workers, mode), daemon=True)
@@ -284,6 +288,12 @@ class SyncManager:
                     logger.warning("%s 补抓后仍失败 %d 页：%s%s", label,
                                    len(still_failed), preview,
                                    "…" if len(still_failed) > 8 else "")
+        except ViewGateRequired as exc:
+            # 匿名查看磁力额度用完：保留断点，人工过验证码后重跑即可续抓
+            self.state["needs_verify"] = True
+            self.state["message"] = f"需要图形验证码（已到第 {self.state['page']} 页）"
+            logger.warning("%s 同步暂停：%s。在网页「同步」页完成验证后重新同步即可续抓",
+                           label, exc)
         except Exception as exc:  # 兜底：任何异常都不能让线程僵死在 running 状态
             self.state["message"] = f"同步异常终止: {exc}"
             logger.exception("%s 同步异常终止", label)
@@ -342,15 +352,24 @@ class SyncManager:
               write_progress: bool = True) -> int:
         """入库一页，返回本页新增条数（-1 表示入库失败，不计入增量判断）"""
         label = SECTIONS[sc]
-        items = [{
-            "magnet": (r.get("zlink") or "").strip(),
-            "title": r.get("zname") or r.get("title") or "",
-            "size": r.get("zsize") or "",
-            "published_at": r.get("eztime") or "",
-            "category": label,
-            "detail_url": BASE + r["aurl"] if r.get("aurl") else "",
-            "extra": movie_ref(r),
-        } for r in rows]
+        # 站点列表不再带磁力，每行要单独请求一次（50 次/验证码），
+        # 已入库的直接复用库里的磁力，额度全留给新资源
+        known = magnet_map_for_dates([r.get("eztime") or "" for r in rows])
+        items = []
+        for r in rows:
+            title = r.get("zname") or r.get("title") or ""
+            magnet = (r.get("zlink") or "").strip()
+            if not magnet.startswith("magnet:"):
+                magnet = known.get(title) or magnet_by_view(str(r.get("id") or ""))
+            items.append({
+                "magnet": magnet,
+                "title": title,
+                "size": r.get("zsize") or "",
+                "published_at": r.get("eztime") or "",
+                "category": label,
+                "detail_url": BASE + r["aurl"] if r.get("aurl") else "",
+                "extra": movie_ref(r),
+            })
         try:
             new_count = upsert_items("bt0", items)
         except Exception as exc:

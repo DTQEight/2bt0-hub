@@ -5,7 +5,10 @@
 
 - 浏览模式（不输关键词）：GET /prod/api/v1/getTList?sc=<板块>&page=<页码>
     板块：1=电影 2=电视剧（与官网 /tlist/{sc}_{page}.html 一致）
-    每条直接返回 zlink 磁力链接、zsize 大小、eztime 时间
+    返回 zsize 大小、eztime 时间等字段。磁力链接自 2026-11 起改为空占位
+    （zlink=''），要按行 id 再调一次 recordMagnetView 才拿得到真磁力
+    （见 magnet_by_view；该接口按出口 IP 每 50 次要求过一次图形验证码，
+    见 gate_captcha / verify_gate，过验证后同一公网 IP 的所有客户端一起解锁）。
 - 搜索模式（输入关键词）：GET /prod/api/v1/getVideoList?sb=<关键词>
     按片名搜索影片库，返回片名/评分/年份/分类，可跳转官网详情页
 
@@ -63,6 +66,11 @@ SESSION.mount("https://", requests.adapters.HTTPAdapter(
     pool_connections=8, pool_maxsize=16, max_retries=0))
 
 logger = logging.getLogger("resource-hub.bt0")
+
+
+class ViewGateRequired(SourceError):
+    """匿名查看磁力满 50 次，站点要求先通过图形验证码（对公网 IP 生效）。"""
+
 
 # 站点对同一 IP 的放行名额是全局共享的（一次挑战、一次放行），并发请求
 # 会让线程互相抢名额并陷入「一直被拦」。所有 API 请求串行执行。
@@ -155,7 +163,8 @@ def _renew_waf_token(html_text: str) -> bool:
 SECTIONS = {1: "电影", 2: "电视剧"}
 
 
-def api_get(endpoint: str, params: dict) -> dict:
+def api_get(endpoint: str, params: dict | None = None,
+            method: str = "GET", data: dict | None = None) -> dict:
     """调用 2bt0 JSON API（该站 TLS 不稳定，带重试）。
 
     WAF 处理：站点对同一出口 IP 几乎是「一次挑战、一次放行」的严格交替
@@ -169,13 +178,23 @@ def api_get(endpoint: str, params: dict) -> dict:
     with _REQ_LOCK:
         while True:
             try:
-                r = SESSION.get(
-                    f"{API}/{endpoint}",
-                    params={**APP_PARAMS, **params},
-                    headers=HEADERS,
-                    timeout=(15, 45),
-                    verify=False,  # 该站证书链不完整
-                )
+                if method == "POST":
+                    r = SESSION.post(
+                        f"{API}/{endpoint}",
+                        params={**APP_PARAMS},
+                        json=data or {},
+                        headers={**HEADERS, "Content-Type": "application/json"},
+                        timeout=(15, 45),
+                        verify=False,
+                    )
+                else:
+                    r = SESSION.get(
+                        f"{API}/{endpoint}",
+                        params={**APP_PARAMS, **(params or {})},
+                        headers=HEADERS,
+                        timeout=(15, 45),
+                        verify=False,  # 该站证书链不完整
+                    )
                 if "/WAF/VERIFY" in str(r.url):
                     raise SourceError(
                         "WAF 拦截：站点要求人机验证。先在网页「同步」页点「自动获取」"
@@ -236,26 +255,78 @@ def movie_ref(row: dict) -> dict:
     }
 
 
+def gate_captcha() -> dict:
+    """取图形验证码（匿名查看磁力满 50 次后站点要求过这道验证）。
+
+    返回 {key, img(data URI), ttl, length}；img 直接给前端 <img src> 用。
+    """
+    d = api_get("getViewGateCaptcha")
+    return {
+        "key": d.get("key") or "",
+        "img": d.get("img") or "",
+        "ttl": d.get("ttl") or 0,
+        "length": d.get("length") or 0,
+    }
+
+
+def verify_gate(key: str, code: str) -> None:
+    """提交图形验证码。失败抛 SourceError（文案即站点返回的错误）。"""
+    if not key or not code:
+        raise SourceError("验证码 key / code 不能为空")
+    api_get("verifyMovieView", method="POST",
+            data={"key": key, "code": (code or "").strip()})
+
+
+def magnet_by_view(seed_id: str) -> str:
+    """按种子 id 取磁力（站点前端「磁力」按钮走的就是这个接口）。
+
+    每次调用消耗 1 次匿名查看额度（站点按出口 IP 计 50 次），额度用完后
+    返回 need_view_verify，需先过图形验证码（见 gate_captcha / verify_gate）。
+    验证对同一公网 IP 生效，所以浏览器上过验证后，容器这边也会自动解锁。
+    """
+    d = api_get("recordMagnetView", {"id": seed_id})
+    link = (d.get("zlink") or "").strip()
+    if link.startswith("magnet:"):
+        return link
+    if d.get("need_view_verify") or d.get("view_limit"):
+        raise ViewGateRequired(
+            f"匿名查看磁力已达上限（{d.get('view_limit') or 50} 次），需要输入图形验证码")
+    return ""
+
+
 def fetch_list(section: int, page: int) -> list[Item]:
     """抓取某板块一页种子列表（页可能为空，表示越界或站点数据空洞）。
 
     该站 API 的 total 字段不可信（恒 400），所以不返回总页数，
     由同步器按"连续空页"判定板块末尾。
+
+    2026-11 起列表只给 zlink='' 占位，磁力要按行 id 再调一次
+    recordMagnetView 才拿得到；撞上图形验证码时抛 ViewGateRequired，
+    由调用方中断本轮（验证后重跑即可，已入库的不会重复消耗额度）。
     """
     data = api_get("getTList", {"sc": section, "page": page})
     rows = data.get("list") or []
 
-    return [Item(
-        id=str(r.get("id") or ""),
-        title=r.get("zname") or r.get("title") or "（无标题）",
-        magnet=(r.get("zlink") or "").strip(),
-        size=r.get("zsize") or "",
-        published_at=r.get("eztime") or "",
-        category=SECTIONS[section],
-        detail_url=BASE + r["aurl"] if r.get("aurl") else "",
-        extra=movie_ref(r),
-    ) for r in rows]
-
+    items: list[Item] = []
+    for r in rows:
+        film = movie_ref(r)
+        title = r.get("zname") or r.get("title") or "（无标题）"
+        magnet = (r.get("zlink") or "").strip()
+        if not magnet.startswith("magnet:"):
+            magnet = magnet_by_view(str(r.get("id") or ""))
+        if not magnet:
+            continue
+        items.append(Item(
+            id=str(r.get("id") or ""),
+            title=title,
+            magnet=magnet,
+            size=r.get("zsize") or "",
+            published_at=r.get("eztime") or "",
+            category=SECTIONS[section],
+            detail_url=BASE + r["aurl"] if r.get("aurl") else "",
+            extra=film,
+        ))
+    return items
 
 # getVideoDetail 返回字段 → movies 表列名
 # tags / definition 是站点影片库筛选用的「影视标签」与「资源画质」（逗号分隔），

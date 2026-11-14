@@ -128,6 +128,9 @@ _INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_magnets_id ON magnets(id);
 CREATE INDEX IF NOT EXISTS idx_magnets_category ON magnets(category);
 CREATE INDEX IF NOT EXISTS idx_magnets_last_seen ON magnets(last_seen_at);
+-- published_at：同步增量时按日期捞「已入库的标题」，避免为老资源重复
+-- 消耗站点匿名查看额度（2026-11 起每取一条磁力算一次，50 次/验证码）
+CREATE INDEX IF NOT EXISTS idx_magnets_published ON magnets(published_at);
 -- (movie_id, id, movie_title)：按片名分组浏览要算 COUNT(*)/MAX(id)/MAX(movie_title)，
 -- 单列 movie_id 索引不覆盖这三列，SQLite 只能拿索引键逐行回表——全量同步后 99.99%
 -- 的磁力都带 movie_id（82 万行实测 35 秒）。并进索引后变成纯覆盖索引扫描，实测
@@ -410,6 +413,24 @@ def upsert_items(source: str, items) -> int:
                 rows,
             )
     return len({h for h in hashes if h not in existing})
+
+
+def magnet_map_for_dates(dates) -> dict[str, str]:
+    """返回这些发布日期下已入库的 {标题: 磁力链}。
+
+    站点自 2026-11 起不再在列表里给磁力，每取一条要额外请求一次，且按出口
+    IP 每 50 次就要人工过图形验证码。增量同步时先用这张表跳过已入库的老
+    资源，把额度全留给真正的新条目。
+    """
+    dates = [d for d in dict.fromkeys(dates) if d]
+    if not dates:
+        return {}
+    with _db() as conn:
+        ph = ",".join("?" * len(dates))
+        rows = conn.execute(
+            f"SELECT title, magnet FROM magnets WHERE published_at IN ({ph})",
+            dates).fetchall()
+    return {r["title"]: r["magnet"] for r in rows if r["title"]}
 
 
 def blank_movie_id_count(hashes) -> int:

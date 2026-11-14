@@ -73,7 +73,7 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "sort-select", "sort-by",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
-  "api-card", "waf-card",
+  "api-card", "waf-card", "gate-card",
   "sync-badge", "sync-badge-text", "sync-stop", "toast",
   "cloud115-view",
   "c115-cookie", "c115-save-cookie", "c115-verify", "c115-cookie-status",
@@ -191,6 +191,7 @@ function activateTab() {
       loadSchedule();
       loadApiKey();
       loadWafCookie();
+      loadGateCard();
     } else {
       applySearchbar();
       load();
@@ -1398,6 +1399,80 @@ async function saveWafCookie() {
     loadWafCookie(); // 重渲染以显示新掩码与来源
   } catch (err) {
     showToast(`保存失败：${err.message}`);
+  }
+}
+
+// ---- 2bt0 图形验证码（匿名查看磁力满 50 次后过一次；验证对公网 IP 生效）----
+// 站点从 2026-11 起把磁力挪到 recordMagnetView 接口，每条算一次查看额度。
+let _gateKey = "";
+
+async function loadGateCard() {
+  const box = el["gate-card"];
+  if (!box) return;
+  let data = null;
+  let err = "";
+  try {
+    const res = await fetch("/api/bt0gate");
+    data = await res.json();
+    if (!res.ok) err = data.detail || `HTTP ${res.status}`;
+  } catch (e) {
+    err = e.message;
+  }
+  if (err || !data || !data.img) {
+    box.innerHTML = `<div class="panel api-panel">
+        <h3>2bt0 图形验证码</h3>
+        <p class="api-hint">${escapeHtml(err || "取验证码失败")}</p>
+        <button type="button" class="act" id="gate-reload">重新获取</button>
+      </div>`;
+  } else {
+    _gateKey = data.key;
+    box.innerHTML = `<div class="panel api-panel">
+        <h3>2bt0 图形验证码</h3>
+        <p class="api-hint">
+          站点按公网 IP 限制「匿名查看磁力」每 50 次需过一次图形验证码。
+          同步日志出现「需要图形验证码」时，在这里输入图中字符即可继续
+          （验证对当前公网 IP 生效，NAS 和浏览器会一起解锁，无需登录）。
+        </p>
+        <div class="api-row">
+          <img src="${data.img}" alt="验证码" id="gate-img"
+               style="height:44px;border-radius:6px;background:#0b0f14" />
+          <input id="gate-code" type="text" autocomplete="off" maxlength="8"
+                 placeholder="${data.length ? `图中 ${data.length} 位字符` : "图中字符"}" />
+          <button type="button" class="act" id="gate-submit">验证</button>
+          <button type="button" class="act" id="gate-reload">换一张</button>
+        </div>
+        <p class="api-hint" id="gate-result"></p>
+      </div>`;
+  }
+  box.querySelector("#gate-reload").addEventListener("click", loadGateCard);
+  const submit = box.querySelector("#gate-submit");
+  if (submit) submit.addEventListener("click", submitGateCode);
+}
+
+async function submitGateCode() {
+  const box = el["gate-card"];
+  const input = box.querySelector("#gate-code");
+  const out = box.querySelector("#gate-result");
+  const code = (input.value || "").trim();
+  if (!code) return;
+  out.textContent = "正在验证…";
+  try {
+    const res = await fetch("/api/bt0gate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: _gateKey, code }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    if (!data.success) {
+      out.textContent = data.message || "验证码不正确，已换一张";
+      loadGateCard(); // 换一张新图
+      return;
+    }
+    showToast(data.message || "验证通过");
+    loadGateCard();
+  } catch (err) {
+    out.textContent = `验证失败：${err.message}`;
   }
 }
 

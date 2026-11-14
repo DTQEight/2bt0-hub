@@ -26,7 +26,8 @@ from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
-from sources.bt0 import SECTIONS, get_cookie, set_cookie, test_connection
+from sources.bt0 import (SECTIONS, gate_captcha, get_cookie, set_cookie,
+                         test_connection, verify_gate)
 from sync import sync_manager
 import cloud115
 import transfer_history
@@ -531,6 +532,34 @@ async def bt0_cookie_renew() -> dict:
         "message": (f"已自动获取新 Cookie 并验证通过：{info['count']} 条 / "
                     f"{info['latency_ms']}ms"),
     }
+
+
+@app.get("/api/bt0gate")
+async def bt0_gate_captcha() -> dict:
+    """取一张图形验证码（匿名查看磁力满 50 次后站点要求过验证）。
+
+    验证结果对出口公网 IP 生效，所以在这里过一次，容器（NAS）和浏览器
+    都会一起解锁；不必登录、也不需要 VIP。
+    """
+    try:
+        return await asyncio.to_thread(gate_captcha)
+    except SourceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/bt0gate")
+async def bt0_gate_verify(body: dict) -> dict:
+    """提交图形验证码。body: {key, code}；成功后同步额度恢复 50 次。"""
+    key = (body.get("key") or "").strip()
+    code = (body.get("code") or "").strip()
+    try:
+        await asyncio.to_thread(verify_gate, key, code)
+    except SourceError as exc:
+        return {"success": False, "message": str(exc)}
+    except Exception as exc:
+        return {"success": False, "message": f"验证失败: {exc}"}
+    logger.info("2bt0 图形验证码已通过（匿名查看额度已恢复）")
+    return {"success": True, "message": "验证通过，可以继续同步了"}
 
 
 @app.get("/api/logs")
