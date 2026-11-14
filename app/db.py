@@ -162,8 +162,10 @@ DROP INDEX IF EXISTS idx_magnets_source;
 
 # ---- FTS5 全文搜索虚拟表 ----
 # 用 trigram tokenizer（SQLite 3.50+ 内建，已验证可用），保证子串匹配；
-# content='xxx' + content_rowid='xxx' → SQLite 自动把主表行 id 映射成 FTS rowid，
-# 主表 upsert/delete 时 FTS 同步更新，不再需要 triggers。
+# content='xxx' + content_rowid='xxx' 是 external-content 模式：SQLite **不会**
+# 自动跟着主表变更，必须由触发器显式维护（下面 _FTS_TRIGGERS）。
+# 之前只建表不建触发器，导致 rebuild 之后新入库的数据全都没进索引——
+# 库里有、网页搜不到（2026-11 排查「理查德·阿维顿」时发现）。
 _FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_magnets USING fts5(
     title, torrent_name, movie_title, category,
@@ -173,6 +175,39 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_movies USING fts5(
     title, otitle, alias, director, performer,
     content='movies', content_rowid='idcode', tokenize='trigram'
 );
+"""
+
+# external-content FTS5 的同步触发器：增/删/改都必须显式维护索引，
+# 否则新行只在主表里，搜索命中不了（'delete' 指令要带旧值）。
+_FTS_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS magnets_fts_ai AFTER INSERT ON magnets BEGIN
+    INSERT INTO fts_magnets(rowid, title, torrent_name, movie_title, category)
+    VALUES (new.id, new.title, new.torrent_name, new.movie_title, new.category);
+END;
+CREATE TRIGGER IF NOT EXISTS magnets_fts_ad AFTER DELETE ON magnets BEGIN
+    INSERT INTO fts_magnets(fts_magnets, rowid, title, torrent_name, movie_title, category)
+    VALUES ('delete', old.id, old.title, old.torrent_name, old.movie_title, old.category);
+END;
+CREATE TRIGGER IF NOT EXISTS magnets_fts_au AFTER UPDATE ON magnets BEGIN
+    INSERT INTO fts_magnets(fts_magnets, rowid, title, torrent_name, movie_title, category)
+    VALUES ('delete', old.id, old.title, old.torrent_name, old.movie_title, old.category);
+    INSERT INTO fts_magnets(rowid, title, torrent_name, movie_title, category)
+    VALUES (new.id, new.title, new.torrent_name, new.movie_title, new.category);
+END;
+CREATE TRIGGER IF NOT EXISTS movies_fts_ai AFTER INSERT ON movies BEGIN
+    INSERT INTO fts_movies(rowid, title, otitle, alias, director, performer)
+    VALUES (new.idcode, new.title, new.otitle, new.alias, new.director, new.performer);
+END;
+CREATE TRIGGER IF NOT EXISTS movies_fts_ad AFTER DELETE ON movies BEGIN
+    INSERT INTO fts_movies(fts_movies, rowid, title, otitle, alias, director, performer)
+    VALUES ('delete', old.idcode, old.title, old.otitle, old.alias, old.director, old.performer);
+END;
+CREATE TRIGGER IF NOT EXISTS movies_fts_au AFTER UPDATE ON movies BEGIN
+    INSERT INTO fts_movies(fts_movies, rowid, title, otitle, alias, director, performer)
+    VALUES ('delete', old.idcode, old.title, old.otitle, old.alias, old.director, old.performer);
+    INSERT INTO fts_movies(rowid, title, otitle, alias, director, performer)
+    VALUES (new.idcode, new.title, new.otitle, new.alias, new.director, new.performer);
+END;
 """
 
 
@@ -206,18 +241,19 @@ def init_db() -> None:
                     logger.info("演职人员表首次建立，从影片表现有字段回填 %d 条", filled)
             # ---- FTS5 全文搜索虚拟表 ----
             conn.executescript(_FTS)
-            # CONTENT 表创建时不会自动灌已有数据，触发 rebuild（一次性的，
-            # 82 万行 ~17s；靠 settings 标记避免每次启动都跑）
+            conn.executescript(_FTS_TRIGGERS)
+            # 存量库补建触发器后必须重建一次索引，把之前漏掉的行补进来
+            # （82 万行 ~17s）。之后由触发器增量维护，靠 settings 标记只跑一次。
             rebuilt = conn.execute(
-                "SELECT value FROM settings WHERE key='fts_rebuilt_v1'").fetchone()
+                "SELECT value FROM settings WHERE key='fts_synced_v2'").fetchone()
             if not rebuilt:
-                logger.info("FTS 索引首次 rebuild，可能耗时 10–25s …")
+                logger.info("FTS 索引重建（补触发器前的漏索引数据），可能耗时 10–25s …")
                 fts_start = time.monotonic()
                 conn.execute("INSERT INTO fts_magnets(fts_magnets) VALUES('rebuild')")
                 conn.execute("INSERT INTO fts_movies(fts_movies) VALUES('rebuild')")
                 conn.execute(
                     "INSERT INTO settings(key, value, updated_at)"
-                    " VALUES('fts_rebuilt_v1','1',?)", (_now(),))
+                    " VALUES('fts_synced_v2','1',?)", (_now(),))
                 logger.info("FTS rebuild 完成，耗时 %.1fs", time.monotonic() - fts_start)
 
 
