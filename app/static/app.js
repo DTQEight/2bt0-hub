@@ -1435,7 +1435,7 @@ async function loadGateCard() {
         </p>
         <div class="api-row">
           <img src="${data.img}" alt="验证码" id="gate-img"
-               style="height:44px;border-radius:6px;background:#0b0f14" />
+               style="width:300px;height:auto;border-radius:6px;background:#0b0f14" />
           <input id="gate-code" type="text" autocomplete="off" maxlength="8"
                  placeholder="${data.length ? `图中 ${data.length} 位字符` : "图中字符"}" />
           <button type="button" class="act" id="gate-submit">验证</button>
