@@ -828,7 +828,11 @@ def invalidate_movie_stats() -> None:
 # 海报墙排序：值 → ORDER BY 表达式。last/versions 取自分组结果，可以先分页再
 # 连 movies（只连本页 24 行）；score/years/votes 在 movies 表里，必须先连接全部组再排序。
 _GROUP_SORT_EXPR = {
-    "last": "last_id",
+    # 「最新入库」按站点发布日期（published_at，统一 YYYY-MM-DD）排，而不是插入 id。
+    # 增量同步撞验证码会拆成多段，最后一段插入的往往是老页资源（第 14–20 页），
+    # 按 id 排序会把它们顶到最前，站点真正的新片反而沉底（2026-11 用户反馈
+    # "电影库增量完好像没更新"）。同一天内仍用 last_id 兜底，保证分页稳定。
+    "last": "last_pub",
     "versions": "versions",
     "score": "CAST(m.doub_score AS REAL)",
     "years": "CAST(m.years AS INTEGER)",
@@ -951,7 +955,8 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
     where = " AND ".join(conds)
     sort = sort if sort in _GROUP_SORT_EXPR else "last"
     group_sql = (f"SELECT movie_id, MAX(movie_title) AS movie_title,"
-                 f"       COUNT(*) AS versions, MAX(id) AS last_id"
+                 f"       COUNT(*) AS versions, MAX(id) AS last_id,"
+                 f"       MAX(published_at) AS last_pub"
                  f" FROM magnets WHERE {where} GROUP BY movie_id")
     fields = ("g.movie_id, COALESCE(NULLIF(m.title, ''), g.movie_title) AS title,"
               " g.versions, m.image, m.poster_path, m.years, m.doub_score")
@@ -987,7 +992,8 @@ def query_groups(page: int = 1, keyword: str = "", category: str = "",
                     params.extend(fts_params)
             where = " AND ".join(conds)
             group_sql = (f"SELECT movie_id, MAX(movie_title) AS movie_title,"
-                         f"       COUNT(*) AS versions, MAX(id) AS last_id"
+                         f"       COUNT(*) AS versions, MAX(id) AS last_id,"
+                         f"       MAX(published_at) AS last_pub"
                          f" FROM magnets WHERE {where} GROUP BY movie_id")
         total = conn.execute(
             f"SELECT COUNT(DISTINCT movie_id) FROM magnets WHERE {where}",
