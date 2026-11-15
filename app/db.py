@@ -436,8 +436,12 @@ def upsert_items(source: str, items) -> int:
                        last_seen_at=excluded.last_seen_at,
                        title=CASE WHEN excluded.title!='' THEN excluded.title ELSE magnets.title END,
                        size=CASE WHEN excluded.size!='' THEN excluded.size ELSE magnets.size END,
-                       published_at=CASE WHEN excluded.published_at!=''
-                           THEN excluded.published_at ELSE magnets.published_at END,
+                       -- published_at 首次写入后不再覆盖：站点 24 小时内的条目给的是
+                       -- “9小时前”这种相对时间，每次增量换算出的日期会随抓取时刻漂移
+                       -- （跨零点时还会差一天），覆盖会让排在最前的片子来回跳动
+                       published_at=CASE WHEN magnets.published_at!=''
+                           THEN magnets.published_at
+                           ELSE excluded.published_at END,
                        category=CASE WHEN excluded.category!='' THEN excluded.category ELSE magnets.category END,
                        detail_url=CASE WHEN excluded.detail_url!='' THEN excluded.detail_url ELSE magnets.detail_url END,
                        torrent_name=CASE WHEN excluded.torrent_name!=''
@@ -451,31 +455,44 @@ def upsert_items(source: str, items) -> int:
     return len({h for h in hashes if h not in existing})
 
 
-def magnet_map_for_titles(titles) -> dict[str, str]:
-    """返回这些标题已入库的 {标题: 磁力链}。
+def magnet_map_for_entries(entries, category: str = "") -> tuple[dict, dict]:
+    """返回这些资源已入库的磁力映射，供增量同步跳过已抓过的条目。
 
     站点自 2026-11 起不再在列表里给磁力，每取一条要额外请求一次，且按出口
     IP 每 50 次就要人工过图形验证码。增量同步时先用这张表跳过已入库的资源，
     把额度全留给真正的新条目。
 
-    按标题而不是按发布日期匹配：站点对 24 小时内的条目返回相对时间
-    （"9小时前"），这个字符串每次抓都在变，且入库时已被换算成绝对日期，
-    拿它当 key 永远查不到——实测电影前 16 页（320 条）全部命中不了，
-    每次增量都把这 320 条重新取一遍磁力，50 次额度用光就撞验证码。
+    entries 是 (标题, 详情页 URL) 序列，key 用「标题 + 详情页」而不是只用标题：
+    全库有 14560 个标题对应多条磁力（同一部片子多个压制版本），只按标题匹配
+    会把同名的另一个版本当成已入库，新种子永久漏掉；而详情页 URL 与磁力
+    基本一一对应（14560 个里有 14553 个是 1:1）。
+    不用发布日期：站点对 24 小时内的条目返回"9小时前"这种相对时间，每次抓
+    都在变，入库时又已换算成绝对日期，拿它当 key 永远查不到——实测电影前
+    16 页（320 条）全部落空，每次增量都重新取一遍磁力，50 次额度用光就撞
+    验证码。
+
+    返回 (按标题+URL 的映射, 按标题的映射)。后者只在列表缺详情页 URL 时兜底。
     """
-    titles = [t for t in dict.fromkeys(titles) if t]
-    if not titles:
-        return {}
-    found: dict[str, str] = {}
+    pairs = [(t, u) for t, u in dict.fromkeys((t, u) for t, u in entries if t)]
+    if not pairs:
+        return {}, {}
+    titles = list(dict.fromkeys(t for t, _ in pairs))
+    by_key: dict[tuple[str, str], str] = {}
+    by_title: dict[str, str] = {}
+    where = "title IN ({ph})" if not category else "category=? AND title IN ({ph})"
     with _db() as conn:
         for i in range(0, len(titles), _SAFE_IN_LIMIT):
             batch = titles[i:i + _SAFE_IN_LIMIT]
             ph = ",".join("?" * len(batch))
+            args = list(batch) if not category else [category, *batch]
             for r in conn.execute(
-                    f"SELECT title, magnet FROM magnets WHERE title IN ({ph})", batch):
-                if r["title"] and r["magnet"]:
-                    found.setdefault(r["title"], r["magnet"])
-    return found
+                    "SELECT title, detail_url, magnet FROM magnets WHERE "
+                    + where.format(ph=ph), args):
+                if not (r["title"] and r["magnet"]):
+                    continue
+                by_key.setdefault((r["title"], r["detail_url"] or ""), r["magnet"])
+                by_title.setdefault(r["title"], r["magnet"])
+    return by_key, by_title
 
 
 def blank_movie_id_count(hashes) -> int:

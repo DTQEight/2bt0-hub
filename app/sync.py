@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from db import (_hash_of, blank_movie_id_count, clear_sync_progress,
                 get_sync_done, get_sync_progress, get_stats,
-                magnet_map_for_titles, set_sync_done, set_sync_progress,
+                magnet_map_for_entries, set_sync_done, set_sync_progress,
                 upsert_items)
 from movies import movie_detail_manager
 from sources.bt0 import (BASE, SECTIONS, ViewGateRequired, api_get,
@@ -266,6 +266,10 @@ class SyncManager:
                         # 待修复的 movie_id → 已追平。待修复页也算进展，否则
                         # 站点改字段后增量会在第 10 页就收工，后面的空值永远补不上
                         if mode == "update":
+                            if new_count < 0:
+                                # 入库失败不是"这页没有新资源"，不能计入提前
+                                # 结束的连续计数，否则连续失败十页会误报"已是最新"
+                                continue
                             if new_count > 0 or repaired >= REPAIR_MIN_BLANK:
                                 known_streak = 0
                             else:
@@ -451,22 +455,27 @@ class SyncManager:
         threading.Thread(target=work, name="wecom-gate", daemon=True).start()
 
     def _save(self, sc: int, page: int, rows: list[dict], mode: str,
-              write_progress: bool = True) -> int:
-        """入库一页，返回本页新增条数（-1 表示入库失败，不计入增量判断）"""
+              write_progress: bool = True) -> tuple[int, int]:
+        """入库一页，返回 (本页新增条数, 补全影片关联条数)；新增为 -1 表示入库失败"""
         label = SECTIONS[sc]
         # 站点列表不再带磁力，每行要单独请求一次（50 次/验证码），
         # 已入库的直接复用库里的磁力，额度全留给新资源。
-        # 按标题匹配：列表对 24 小时内的条目给的是"9小时前"这种相对时间，
-        # 每次抓都变，按日期查永远落空（详见 db.magnet_map_for_titles）。
-        known = magnet_map_for_titles(
-            [r.get("zname") or r.get("title") or "" for r in rows])
+        # 按「标题 + 详情页」匹配：同名不同版本（全库 1.4 万个标题有多条磁力）
+        # 只按标题会漏掉新版本；按日期匹配则因相对时间永远落空。
+        known, known_title = magnet_map_for_entries(
+            [(r.get("zname") or r.get("title") or "",
+              BASE + r["aurl"] if r.get("aurl") else "") for r in rows],
+            category=label)
         items = []
         try:
             for r in rows:
                 title = r.get("zname") or r.get("title") or ""
+                url = BASE + r["aurl"] if r.get("aurl") else ""
                 magnet = (r.get("zlink") or "").strip()
                 if not magnet.startswith("magnet:"):
-                    magnet = known.get(title) or magnet_by_view(str(r.get("id") or ""))
+                    magnet = (known.get((title, url))
+                              or (known_title.get(title) if not url else "")
+                              or magnet_by_view(str(r.get("id") or "")))
                 if not magnet:
                     continue
                 items.append({
