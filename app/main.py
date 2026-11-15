@@ -491,13 +491,15 @@ async def schedule_get() -> dict:
 
 @app.post("/api/schedule")
 async def schedule_set(body: dict) -> dict:
-    """修改定时任务。body: {enabled?: bool, hour?: 0-23}"""
+    """修改定时任务。body: {enabled?: bool, hours?: [0-23, ...]}"""
+    hours = body.get("hours", body.get("hour"))  # hour 兼容旧前端
     try:
-        cfg = set_schedule(enabled=body.get("enabled"), hour=body.get("hour"))
+        cfg = set_schedule(enabled=body.get("enabled"), hours=hours)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"参数无效：{exc}") from exc
-    logger.info("定时任务配置已更新：%s，每天 %02d:00",
-                "已开启" if cfg["enabled"] else "已关闭", cfg["hour"])
+    logger.info("定时任务配置已更新：%s，每天 %s",
+                "已开启" if cfg["enabled"] else "已关闭",
+                "、".join(f"{h:02d}:00" for h in cfg["hours"]))
     return _schedule_payload(cfg)
 
 

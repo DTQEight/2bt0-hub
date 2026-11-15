@@ -1023,6 +1023,36 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .sched-select:hover { border-color: #3d444d; }
 .sched-select:focus { border-color: var(--accent); }
 
+/* 执行时刻：24 个小时格，点选即保存（可多选） */
+.hour-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hour-chip {
+  min-width: 32px;
+  padding: 3px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+
+.hour-chip:hover { border-color: #3d444d; color: var(--text); }
+
+.hour-chip.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+  font-weight: 700;
+}
+
 /* ---- 日志页 ---- */
 
 .logs-head {

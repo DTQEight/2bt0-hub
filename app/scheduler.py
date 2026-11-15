@@ -1,11 +1,12 @@
-"""每日定时增量更新：每天固定时刻依次对电影、电视剧跑一次增量更新。
+"""定时增量更新：每天在若干固定时刻依次对电影、电视剧跑一次增量更新。
 
 - 只做增量更新（扫前 10 页追新），不做全量；板块必须已完成全量同步
 - 两个板块共用一个同步器，必须串行：电影跑完再跑电视剧
 - 每个板块跑完自动跟进该板块的新增影片详情（海报/评分等）
 - 不自动备份数据库（日常快照性价比太低，理由见 run_daily_incremental）
-- 已有同步在跑（例如手动全量）时跳过当天，避免互相打断
-- 开关与触发小时存在数据库里，网页「同步」页可随时修改，调度线程每 30 秒读取一次
+- 已有同步在跑（例如手动全量）时跳过当次，避免互相打断
+- 开关与触发时刻（可多个，如 0/6/12/18 点）存在数据库里，网页「同步」页可随时修改，
+  调度线程每 30 秒读取一次
 - 容器时区由 TZ 决定（compose 里为 Asia/Shanghai），按容器本地时间触发
 """
 
@@ -25,50 +26,82 @@ from sync import sync_manager
 logger = logging.getLogger("resource-hub.scheduler")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
-# 默认触发小时（0-23 点，容器本地时间）；网页上改过之后以数据库为准
-DEFAULT_HOUR = int(os.getenv("SYNC_HOUR", "3"))
+# 默认触发时刻（0-23 点，容器本地时间，逗号分隔）；网页上改过之后以数据库为准。
+# 站点每个板块只暴露最新 400 条，一天新增曾达 241 条，一天一跑有溢出窗口
+# （多出的旧条目滑出列表就永久取不到了），故默认每 6 小时一次。
+DEFAULT_HOURS = [int(h) for h in os.getenv("SYNC_HOURS", "0,6,12,18").split(",") if h.strip()]
 # 调度线程轮询间隔：兼作"重读配置"和"等待到点"的粒度
 POLL_SECONDS = 30
 # 手动备份（backup_database）时保留最近 N 份；自动备份已关闭
 BACKUP_KEEP = 7
 
 _KEY_ENABLED = "schedule.enabled"
-_KEY_HOUR = "schedule.hour"
+_KEY_HOURS = "schedule.hours"
+_KEY_HOUR = "schedule.hour"  # 旧版单时刻配置，仅用于迁移
 
 
 # ---- 配置读写（供网页 UI 调用） ----
 
+def _parse_hours(raw: str) -> list[int]:
+    """把 "0,6,12,18" 解析成去重升序的小时列表；有空值/越界时回退默认值"""
+    hours: list[int] = []
+    for part in str(raw).replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            h = int(part)
+        except ValueError:
+            return list(DEFAULT_HOURS)
+        if not 0 <= h <= 23:
+            return list(DEFAULT_HOURS)
+        if h not in hours:
+            hours.append(h)
+    return sorted(hours) or list(DEFAULT_HOURS)
+
+
 def get_schedule() -> dict:
-    """读取定时任务配置：{"enabled": bool, "hour": int}"""
-    try:
-        hour = int(get_setting(_KEY_HOUR, str(DEFAULT_HOUR)))
-    except ValueError:
-        hour = DEFAULT_HOUR
-    if not 0 <= hour <= 23:
-        hour = DEFAULT_HOUR
-    return {"enabled": get_setting(_KEY_ENABLED, "1") == "1", "hour": hour}
+    """读取定时任务配置：{"enabled": bool, "hours": [int, ...]}"""
+    raw = get_setting(_KEY_HOURS, "")
+    if not raw:
+        legacy = get_setting(_KEY_HOUR, "").strip()  # 旧版只存了一个小时
+        raw = legacy if legacy.isdigit() else ""
+    return {"enabled": get_setting(_KEY_ENABLED, "1") == "1",
+            "hours": _parse_hours(raw) if raw else list(DEFAULT_HOURS)}
 
 
-def set_schedule(enabled: bool | None = None, hour: int | None = None) -> dict:
+def set_schedule(enabled: bool | None = None,
+                 hours: list[int] | str | None = None) -> dict:
     """修改定时任务配置（只改传入的字段），返回修改后的配置"""
     if enabled is not None:
         set_setting(_KEY_ENABLED, "1" if enabled else "0")
-    if hour is not None:
-        h = int(hour)  # 非数字会抛 ValueError，由调用方转成 400
-        if not 0 <= h <= 23:
-            raise ValueError("hour 必须在 0-23 之间")
-        set_setting(_KEY_HOUR, str(h))
+    if hours is not None:
+        vals: list[int] = []
+        for v in (hours if isinstance(hours, (list, tuple)) else [hours]):
+            h = int(v)  # 非数字会抛 ValueError，由调用方转成 400
+            if not 0 <= h <= 23:
+                raise ValueError("执行时刻必须在 0-23 之间")
+            if h not in vals:
+                vals.append(h)
+        if not vals:
+            raise ValueError("至少要保留一个执行时刻")
+        set_setting(_KEY_HOURS, ",".join(str(h) for h in sorted(vals)))
     return get_schedule()
 
 
 def next_run_at(cfg: dict | None = None) -> datetime | None:
-    """下次执行时刻；已关闭时返回 None"""
+    """下次执行时刻（所有配置时刻中最近的一个）；已关闭时返回 None"""
     cfg = cfg or get_schedule()
     if not cfg["enabled"]:
         return None
     now = datetime.now()
-    target = now.replace(hour=cfg["hour"], minute=0, second=0, microsecond=0)
-    return target if target > now else target + timedelta(days=1)
+    for h in cfg["hours"]:
+        target = datetime(now.year, now.month, now.day, h, 0, 0)
+        if target > now:
+            return target
+    first = cfg["hours"][0]
+    tomorrow = now + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, first, 0, 0)
 
 
 # ---- 执行 ----
@@ -134,23 +167,25 @@ def run_daily_incremental() -> None:
 
 def _loop() -> None:
     pending: datetime | None = None
-    hour: int | None = None
+    hours_key: tuple[int, ...] | None = None
     while True:
         cfg = get_schedule()
-        changed = cfg["hour"] != hour
-        hour = cfg["hour"]
+        key = tuple(cfg["hours"])
+        changed = key != hours_key
+        hours_key = key
         if not cfg["enabled"]:
             if pending is not None:
-                logger.info("每日增量更新已关闭，不再排期")
+                logger.info("定时增量更新已关闭，不再排期")
             pending = None
         elif pending is None or changed:
             pending = next_run_at(cfg)
-            logger.info("每日增量更新已排期：%s（每天 %02d:00）",
-                        pending.strftime("%Y-%m-%d %H:%M"), hour)
+            logger.info("定时增量更新已排期：%s（每天 %s）",
+                        pending.strftime("%Y-%m-%d %H:%M"),
+                        "、".join(f"{h:02d}:00" for h in cfg["hours"]))
         elif datetime.now() >= pending:
             run_daily_incremental()
             pending = next_run_at(cfg)
-            logger.info("每日增量更新下次排期：%s", pending.strftime("%Y-%m-%d %H:%M"))
+            logger.info("定时增量更新下次排期：%s", pending.strftime("%Y-%m-%d %H:%M"))
         time.sleep(POLL_SECONDS)
 
 

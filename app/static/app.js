@@ -1250,25 +1250,28 @@ function statsCardHtml(s) {
 // 每日定时任务卡片
 function scheduleCardHtml(cfg) {
   const on = !!cfg.enabled;
-  const opts = Array.from({ length: 24 }, (_, h) =>
-    `<option value="${h}"${h === cfg.hour ? " selected" : ""}>${String(h).padStart(2, "0")}:00</option>`
+  const hours = new Set((cfg.hours || []).map(Number));
+  const chips = Array.from({ length: 24 }, (_, h) =>
+    `<button type="button" class="hour-chip${hours.has(h) ? " on" : ""}" data-hour="${h}">${String(h).padStart(2, "0")}</button>`
   ).join("");
+  const times = (cfg.hours || []).map((h) => `${String(h).padStart(2, "0")}:00`).join(" / ");
   return `
     <div class="sync-card">
       <div class="sync-card-head">
-        <h3>每日增量更新</h3>
+        <h3>定时增量更新</h3>
         <span class="sbadge ${on ? "run" : "none"}">${on ? "已开启" : "已关闭"}</span>
       </div>
       <div class="sync-rows">
         <div class="sync-row"><span>执行内容</span><span>电影 → 电视剧（依次）</span></div>
-        <div class="sync-row"><span>每天时间</span><span><select class="sched-select" data-sched="hour">${opts}</select></span></div>
+        <div class="sync-row"><span>执行时刻</span><span class="hour-chips">${chips}</span></div>
+        <div class="sync-row"><span>当前设置</span><span>${escapeHtml(times || "—")}</span></div>
         <div class="sync-row"><span>下次执行</span><span class="${on ? "eta" : ""}">${
           on ? escapeHtml(cfg.next_run || "—") : "已关闭"}</span></div>
       </div>
       <div class="sync-actions">
         <button type="button" data-sched="toggle">${on ? "关闭定时任务" : "开启定时任务"}</button>
       </div>
-      <div class="stats-hint">到点自动依次对两个板块跑增量更新（只扫前 10 页追新）。若当时已有同步在进行，当天自动跳过。</div>
+      <div class="stats-hint">点上面的时刻可增删（至少保留一个）。到点自动依次对两个板块跑增量更新（只扫前 10 页追新）；若当时已有同步在进行，该次自动跳过。</div>
     </div>`;
 }
 
@@ -1286,8 +1289,19 @@ function renderSchedule(cfg) {
   el["schedule-card"].innerHTML = scheduleCardHtml(cfg);
   el["schedule-card"].querySelector('[data-sched="toggle"]').addEventListener(
     "click", () => saveSchedule({ enabled: !cfg.enabled }));
-  el["schedule-card"].querySelector('[data-sched="hour"]').addEventListener(
-    "change", (e) => saveSchedule({ hour: Number(e.target.value) }));
+  el["schedule-card"].querySelectorAll(".hour-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const h = Number(btn.dataset.hour);
+      const next = new Set((cfg.hours || []).map(Number));
+      if (next.has(h)) {
+        if (next.size === 1) { showToast("至少要保留一个执行时刻"); return; }
+        next.delete(h);
+      } else {
+        next.add(h);
+      }
+      saveSchedule({ hours: [...next].sort((a, b) => a - b) });
+    });
+  });
 }
 
 async function saveSchedule(patch) {
@@ -1300,8 +1314,9 @@ async function saveSchedule(patch) {
     const cfg = await res.json();
     if (!res.ok) throw new Error(cfg.detail || `HTTP ${res.status}`);
     renderSchedule(cfg);
+    const times = (cfg.hours || []).map((h) => `${String(h).padStart(2, "0")}:00`).join(" / ");
     showToast(cfg.enabled
-      ? `定时任务已开启：每天 ${String(cfg.hour).padStart(2, "0")}:00 自动增量更新`
+      ? `定时任务已开启：每天 ${times} 自动增量更新`
       : "定时任务已关闭");
   } catch (err) {
     showToast(`保存失败：${err.message}`);
