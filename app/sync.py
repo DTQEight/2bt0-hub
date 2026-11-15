@@ -198,6 +198,7 @@ class SyncManager:
 
     def _run(self, section: int, start_page: int, workers: int, mode: str) -> None:
         label = SECTIONS[section]
+        started_at = time.monotonic()
         early_stopped = False
         natural_end = False  # 仅当确认抓到板块真正末页时为 True（防误标"已完成"）
         new_total = 0        # 本次入库的新条数（增量更新用于结算提示）
@@ -342,10 +343,54 @@ class SyncManager:
                     ("…" if len(still_failed) > 8 else "")
                 self.state["message"] = ((self.state["message"] or "同步结束")
                                          + f"；{len(still_failed)} 页补抓后仍失败（{preview}）")
+            # 企微推送同步结果（未配置企微时静默跳过；撞验证码时不重复推送）
+            if not self.state.get("needs_verify"):
+                self._notify_wecom(label, mode, new_total, still_failed,
+                                   started_at, early_stopped or natural_end)
             # 同步结束后自动跟进本板块的影片详情（海报/年份/评分，供海报墙显示）
             # 详情是独立后台任务，这里只负责启动、不等它跑完（顶栏会接着显示详情进度）
             if self._auto_details and not self._stop.is_set():
                 self._fetch_new_movie_details()
+
+    def _notify_wecom(self, label: str, mode: str, new_total: int,
+                      still_failed: list[int], started_at: float,
+                      finished: bool) -> None:
+        """同步结束时把结果推到企业微信（未配置时静默跳过）。
+
+        finished=True 表示自然收尾（增量追平或全量到末页），否则是被手动
+        停止/网络异常中断，会注明断点页，方便第二天接着跑。
+        """
+        try:
+            import wecom
+            if not wecom.is_configured():
+                return
+            secs = int(time.monotonic() - started_at)
+            dur = f"{secs // 60} 分 {secs % 60} 秒" if secs >= 60 else f"{secs} 秒"
+            if finished:
+                head = "同步完成"
+            elif self._stop.is_set():
+                head = "同步已停止"
+            else:
+                head = "同步中断"
+            lines = [
+                f"【2bt0 {head}】{label}",
+                f"模式：{MODE_LABELS.get(mode, mode)}",
+                f"进度：第 {self.state['page']} 页",
+                f"本次新增：{new_total} 条",
+            ]
+            if still_failed:
+                lines.append(f"失败页：{len(still_failed)} 页（再跑一次增量可补）")
+            lines.append(f"耗时：{dur}")
+            try:
+                from db import get_stats
+                lines.append(f"库内共 {get_stats()['total']} 条")
+            except Exception:
+                pass
+            if self.state.get("message"):
+                lines.append(f"说明：{self.state['message']}")
+            wecom.send_text("\n".join(lines))
+        except Exception:
+            logger.exception("企微同步结果推送失败（不影响同步）")
 
     def _fetch_new_movie_details(self) -> None:
         """同步结束后自动拉取本板块的新增影片详情。
