@@ -95,6 +95,9 @@ class SyncManager:
         self._stop = threading.Event()
         self._samples: deque = deque(maxlen=150)  # (monotonic, page) 速度采样
         self._auto_details = True  # 增量结束后是否自动跟进拉影片详情
+        # 过验证码会把一次同步拆成多段（每段都重新 start()，state 会重置）。
+        # 这里单独记"本轮"累计，续抓时不清零，推送里才能报出真实总数。
+        self._session = {"section": 0, "new": 0, "started": time.monotonic()}
         self.state = {
             "running": False,
             "source": "bt0",
@@ -152,6 +155,14 @@ class SyncManager:
         self._stop.clear()
         self._samples.clear()
         self._auto_details = auto_details
+        # 同一板块、上一段是暂停等验证码 → 视为同一轮续抓，保留累计值；
+        # 否则（换板块 / 手动重开 / 超过 30 分钟）重新开始计一轮
+        carry = (self.state.get("needs_verify")
+                 and self.state.get("section") == section
+                 and time.monotonic() - self._session["started"] < 1800)
+        if not carry:
+            self._session = {"section": section, "new": 0,
+                             "started": time.monotonic()}
         self.state.update(
             running=True, section=section, mode=mode,
             page=page, fetched=0, message="",
@@ -198,10 +209,9 @@ class SyncManager:
 
     def _run(self, section: int, start_page: int, workers: int, mode: str) -> None:
         label = SECTIONS[section]
-        started_at = time.monotonic()
         early_stopped = False
         natural_end = False  # 仅当确认抓到板块真正末页时为 True（防误标"已完成"）
-        new_total = 0        # 本次入库的新条数（增量更新用于结算提示）
+        new_total = 0        # 本段入库的新条数（过验证码会分成多段）
         repaired_total = 0   # 本次补全 movie_id 的条数（旧字段解析遗留的空值）
         failed_pages: list[int] = []  # 主循环中抓取失败的页，结束后补抓
         still_failed: list[int] = []  # 补抓一轮后仍失败的页（写进结束消息）
@@ -305,27 +315,30 @@ class SyncManager:
             logger.exception("%s 同步异常终止", label)
         finally:
             self.state["running"] = False
+            # 本轮累计（含过验证码的前几段）；本段新增只在日志里体现
+            session_total = self._session["new"] + max(0, new_total)
             if self._stop.is_set():
                 if not self.state["message"]:
                     self.state["message"] = "已手动停止（断点已保存）"
                 logger.info("同步停止：%s，已完成到第 %d 页，可断点续抓",
                             label, self.state["page"])
             elif early_stopped:
-                bits = [f"新增 {new_total} 条"] if new_total else []
+                bits = [f"本轮新增 {session_total} 条"] if session_total else []
                 if repaired_total:
                     bits.append(f"补全影片关联 {repaired_total} 条")
                 self.state["message"] = ("已是最新：" + "，".join(bits)) if bits \
                     else "已是最新，无新增资源"
-                logger.info("%s 增量更新完成：本次新增 %d 条、补全影片关联 %d 条，"
-                            "连续 %d 页无进展，提前结束",
-                            label, new_total, repaired_total, EARLY_STOP_PAGES)
+                logger.info("%s 增量更新完成：本轮新增 %d 条（本段 %d 条）、"
+                            "补全影片关联 %d 条，连续 %d 页无进展，提前结束",
+                            label, session_total, new_total, repaired_total,
+                            EARLY_STOP_PAGES)
             elif natural_end:
                 # 确认抓到板块真正末页：标记完成并清除断点，下次运行自动转增量更新
                 set_sync_done("bt0", section)
                 clear_sync_progress("bt0", section)
                 # 增量模式走到末页只是"扫了一遍"，不代表全量抓完，别报"全量完成"
-                self.state["message"] = ("已扫到末页（第 %d 页），本次新增 %d 条"
-                                         % (self.state["page"], new_total)
+                self.state["message"] = ("已到站点列表上限（第 %d 页 / 400 条），本轮新增 %d 条"
+                                         % (self.state["page"], session_total)
                                          if mode == "update" else "全量同步完成")
                 logger.info("%s %s：抓到第 %d 页，本次共 %d 条",
                             label, "增量扫描完成" if mode == "update" else "全量同步完成",
@@ -346,25 +359,28 @@ class SyncManager:
             # 企微推送同步结果（未配置企微时静默跳过；撞验证码时不重复推送）
             if not self.state.get("needs_verify"):
                 self._notify_wecom(label, mode, new_total, still_failed,
-                                   started_at, early_stopped or natural_end)
+                                   early_stopped or natural_end)
+            self._session["new"] = session_total
             # 同步结束后自动跟进本板块的影片详情（海报/年份/评分，供海报墙显示）
             # 详情是独立后台任务，这里只负责启动、不等它跑完（顶栏会接着显示详情进度）
             if self._auto_details and not self._stop.is_set():
                 self._fetch_new_movie_details()
 
     def _notify_wecom(self, label: str, mode: str, new_total: int,
-                      still_failed: list[int], started_at: float,
-                      finished: bool) -> None:
+                      still_failed: list[int], finished: bool) -> None:
         """同步结束时把结果推到企业微信（未配置时静默跳过）。
 
         finished=True 表示自然收尾（增量追平或全量到末页），否则是被手动
         停止/网络异常中断，会注明断点页，方便第二天接着跑。
+        新增数用「本轮」累计值：过验证码会把一次同步拆成多段，只看最后
+        一段会把 241 条报成 21 条。
         """
         try:
             import wecom
             if not wecom.is_configured():
                 return
-            secs = int(time.monotonic() - started_at)
+            session_new = self._session["new"] + max(0, new_total)
+            secs = int(time.monotonic() - self._session["started"])
             dur = f"{secs // 60} 分 {secs % 60} 秒" if secs >= 60 else f"{secs} 秒"
             if finished:
                 head = "同步完成"
@@ -376,7 +392,8 @@ class SyncManager:
                 f"【2bt0 {head}】{label}",
                 f"模式：{MODE_LABELS.get(mode, mode)}",
                 f"进度：第 {self.state['page']} 页",
-                f"本次新增：{new_total} 条",
+                f"本轮新增：{session_new} 条"
+                + (f"（本段 {new_total} 条）" if session_new != max(0, new_total) else ""),
             ]
             if still_failed:
                 lines.append(f"失败页：{len(still_failed)} 页（再跑一次增量可补）")
