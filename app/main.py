@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+import admin_auth
 from api_auth import (api_key_for_admin, get_api_key, is_public_api_path,
                       require_api_key)
 from db import (filter_options, get_movie, get_setting, get_sync_done,
@@ -63,6 +64,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 init_db()  # 本地磁力库建表
 # 对外 API 密钥：首次启动生成并打印一次到日志（之后从库里读，不重复打印）
 get_api_key()
+# 后台管理账号：首次启动创建（密码取 ADMIN_PASSWORD，未设置则随机生成并打印）
+admin_auth.ensure_admin()
 
 
 def _auto_resume() -> None:
@@ -117,20 +120,69 @@ async def static_no_cache(request, call_next):
 
 @app.middleware("http")
 async def api_key_guard(request, call_next):
-    """全站 API 密钥校验：所有 /api/* 都要带 X-API-Key，只有这几类豁免——
-    /api/health（容器 healthcheck 依赖）、/api/apikey（查看密钥本身）、
-    /api/docs 与 /api/openapi.json（文档）。
+    """鉴权分两层：
+
+    1. 后台管理接口（同步/日志/115/企微/定时…）只认登录 Cookie（见 admin_auth），
+       不认 X-API-Key——那把钥匙连公网访客都能从 /api/apikey 换到。
+    2. 其余 /api/* 走全站 API 密钥：/api/health（容器 healthcheck 依赖）、
+       /api/apikey（查看密钥本身）、/api/docs 与 /api/openapi.json（文档）豁免。
 
     用中间件而不是逐个路由加依赖：新增接口自动受保护，不会有人漏加。
-    网页自己不豁免，而是由 app.js 自动带上密钥（见 static/app.js 顶部）。
+    网页自己不豁免，而是由 app.js 自动带上密钥 / Cookie（见 static/app.js 顶部）。
     """
     path = request.url.path
-    if path.startswith("/api/") and not is_public_api_path(path):
+    if admin_auth.is_admin_path(path):
+        if not admin_auth.check_session(request):
+            return JSONResponse({"detail": "需要登录后台管理"}, status_code=401)
+        return await call_next(request)
+    if path.startswith("/api/") and not is_public_api_path(path) \
+            and path not in admin_auth.PUBLIC_ADMIN_PATHS:
         try:
             require_api_key(request)
         except HTTPException as exc:
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     return await call_next(request)
+
+
+# ---- 后台管理登录 ----
+
+@app.get("/api/admin/session")
+async def admin_session(request: Request) -> dict:
+    """当前浏览器是否已登录（前端载入时探一次，决定是否显示后台 Tab）"""
+    logged_in = admin_auth.check_session(request)
+    return {"logged_in": logged_in,
+            "username": admin_auth.get_username() if logged_in else ""}
+
+
+@app.post("/api/admin/login")
+async def admin_login(body: dict, request: Request, response: Response) -> dict:
+    user = str(body.get("username") or "").strip()
+    password = str(body.get("password") or "")
+    ok, msg = admin_auth.verify_login(user, password)
+    host = request.client.host if request.client else "?"
+    if not ok:
+        time.sleep(0.2)  # 轻微延迟，压低暴力尝试速率
+        logger.warning("后台管理登录失败（来源 %s）", host)
+        raise HTTPException(status_code=401, detail=msg)
+    admin_auth.attach_cookie(response, admin_auth.create_session())
+    logger.info("后台管理登录成功（来源 %s）", host)
+    return {"success": True}
+
+
+@app.post("/api/admin/logout")
+async def admin_logout(request: Request, response: Response) -> dict:
+    admin_auth.drop_session(request.cookies.get(admin_auth.COOKIE_NAME, ""))
+    admin_auth.clear_cookie(response)
+    return {"success": True}
+
+
+@app.post("/api/admin/password")
+async def admin_change_password(body: dict) -> dict:
+    ok, msg = admin_auth.change_password(str(body.get("old") or ""),
+                                         str(body.get("new") or ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
 
 
 @app.get("/api/health")

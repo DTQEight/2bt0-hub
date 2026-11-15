@@ -1,14 +1,16 @@
 // 2bt0 资源库前端：电影 / 电视剧 / 本地磁力库 / 同步 / 日志
 
 const state = {
-  tab: "movie", // movie | tv | local | sync | logs
+  tab: "movie", // movie | tv | local | sync | logs | cloud115（后三个需登录后台）
+  admin: false, // 是否已登录后台管理（由 /api/admin/session 决定）
+  adminUser: "",
   page: 1,
   q: "",
   person: "", // 非空＝只看该演职人员（演员/导演/编剧）参与的影片，点详情卡里的名字设置
   // 电影 / 电视剧 Tab 就是本地库分板块的片名海报墙，只有「本地磁力库」看全部版本列表
   localCategory: "电影", // 本地库当前板块（local Tab 下可切 电影/电视剧/全部）
   localView: "groups", // groups=按片名海报墙 | items=全部版本列表
-  localSort: "last", // 排序：last=最新入库 | score=评分最高 | votes=评分人数 | years=上映时间 | versions=版本数
+  localSort: "last", // 排序：last=最新发布 | score=评分最高 | votes=评分人数 | years=上映时间 | versions=版本数
   // 筛选条（分类参考主站影片库筛选）：前五项是标签，其余是高级筛选
   localFilters: {
     ftype: "", farea: "", fyears: "", fquality: "", ftag: "",
@@ -38,6 +40,16 @@ function apiKey() {
 }
 
 const nativeFetch = window.fetch.bind(window);
+
+// 后台管理接口前缀：这些路径只认登录 Cookie（后端 admin_auth.ADMIN_PREFIXES）
+const ADMIN_PREFIXES = ["/api/admin", "/api/sync", "/api/movies", "/api/logs",
+  "/api/schedule", "/api/bt0cookie", "/api/bt0gate", "/api/wecom", "/api/115"];
+
+function isAdminUrl(url) {
+  const path = String(url || "").split("?")[0];
+  return ADMIN_PREFIXES.some((p) => path.startsWith(p));
+}
+
 window.fetch = async (input, init = {}) => {
   const url = typeof input === "string" ? input : (input && input.url) || "";
   // /api/apikey 自身不能再走这段，否则递归
@@ -45,10 +57,24 @@ window.fetch = async (input, init = {}) => {
     return nativeFetch(input, init);
   }
   const key = await apiKey();
-  if (!key) return nativeFetch(input, init);
-  const headers = new Headers(init.headers || {});
-  headers.set("X-API-Key", key);
-  return nativeFetch(input, { ...init, headers });
+  let res;
+  if (!key) {
+    res = await nativeFetch(input, init);
+  } else {
+    const headers = new Headers(init.headers || {});
+    headers.set("X-API-Key", key);
+    res = await nativeFetch(input, { ...init, headers });
+  }
+  // 后台接口 401＝登录态失效（容器重启或超过 12 小时）：退回登录卡片
+  if (res.status === 401 && state.admin && isAdminUrl(url)
+      && !url.startsWith("/api/admin/login")) {
+    state.admin = false;
+    state.adminUser = "";
+    el["admin-user-name"].textContent = "";
+    if (isAdminTab(state.tab)) activateTab();
+    showToast("登录已失效，请重新登录");
+  }
+  return res;
 };
 
 // 三个列表 Tab 都读本地库：电影/电视剧按板块看片名海报墙，本地磁力库看全部版本
@@ -75,6 +101,10 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
   "api-card", "waf-card", "gate-card", "wecom-card",
   "sync-badge", "sync-badge-text", "sync-stop", "toast",
+  "admin-open", "admin-bar", "admin-user-name", "admin-logout",
+  "admin-pwd-toggle", "admin-pwd-form", "admin-pwd-old", "admin-pwd-new",
+  "admin-login-view", "admin-login-form", "admin-user-input", "admin-pass-input",
+  "admin-login-btn", "admin-login-msg",
   "cloud115-view",
   "c115-cookie", "c115-save-cookie", "c115-verify", "c115-cookie-status",
   "c115-save-path", "c115-pick-dir", "c115-back-dir", "c115-dir-breadcrumb", "c115-dir-list",
@@ -162,6 +192,10 @@ function switchTab(tab, push = true) {
   if (push) pushHistory();
 }
 
+function isAdminTab(tab) {
+  return tab === "sync" || tab === "logs" || tab === "cloud115";
+}
+
 // 按 state.tab 渲染骨架（Tab 高亮、区块显隐、搜索框回填）并加载对应内容。
 // 切 Tab 与浏览器后退/前进恢复视图共用这一段
 function activateTab() {
@@ -170,13 +204,27 @@ function activateTab() {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   }
   const isList = ["movie", "tv", "local"].includes(tab);
+  // 后台管理：未登录时三个后台 Tab 隐藏，只显示登录卡片
+  const needLogin = isAdminTab(tab) && !state.admin;
+  for (const btn of el.tabs.querySelectorAll(".admin-tab")) {
+    btn.hidden = !state.admin;
+  }
   el["search-form"].hidden = !isList; // 搜索栏嵌在顶栏，列表页才显示
   el["list-view"].hidden = !isList;
-  el["sync-view"].hidden = tab !== "sync";
-  el["logs-view"].hidden = tab !== "logs";
-  el["cloud115-view"].hidden = tab !== "cloud115";
+  el["admin-login-view"].hidden = !needLogin;
+  el["admin-bar"].hidden = !(isAdminTab(tab) && state.admin);
+  el["sync-view"].hidden = needLogin || tab !== "sync";
+  el["logs-view"].hidden = needLogin || tab !== "logs";
+  el["cloud115-view"].hidden = needLogin || tab !== "cloud115";
   el.q.value = state.q; // 搜索框内容跟随视图状态（后退恢复时也要回填）
   applyCatFilter();
+  if (needLogin) {
+    stopSyncPolling();
+    stopLogPolling();
+    el["sync-badge"].hidden = true;
+    renderAdminLogin("");
+    return;
+  }
   if (tab === "logs") {
     stopSyncPolling();
     startLogPolling();
@@ -672,7 +720,10 @@ function buildCard(item) {
       actions.push(`<a class="act" href="${escapeHtml(item.magnet)}">打开</a>`);
     }
     if (hash) {
-      actions.push(`<button type="button" class="act c115" data-hash="${escapeHtml(hash)}">转存115</button>`);
+      // 115 转存属后台功能，未登录不显示入口
+      if (state.admin) {
+        actions.push(`<button type="button" class="act c115" data-hash="${escapeHtml(hash)}">转存115</button>`);
+      }
       actions.push(`<span class="hash" title="info_hash">${escapeHtml(hash.slice(0, 16))}…</span>`);
     }
   } else if (item.detail_url && /^https?:\/\//i.test(item.detail_url)) {
@@ -1704,6 +1755,10 @@ async function fetchMovieStatus() {
 }
 
 async function refreshSyncUI(notifyDone) {
+  if (!state.admin) { // 未登录后台：这些接口会 401，也不再显示同步徽标
+    el["sync-badge"].hidden = true;
+    return;
+  }
   let s;
   try {
     const res = await fetch("/api/sync/status");
@@ -2116,9 +2171,115 @@ async function transferMovieTo115(movieId, title) {
   } catch (e) { showToast(e.message); }
 }
 
+// ---- 后台管理登录 ----
+
+// 登录卡片的提示行（空字符串＝清空）
+function renderAdminLogin(msg) {
+  el["admin-login-msg"].textContent = msg || "";
+  el["admin-login-msg"].classList.toggle("error", !!msg);
+}
+
+// 询问后端当前浏览器是否已登录（Cookie 会话），并同步顶栏后台 Tab 的显隐
+async function loadAdminSession() {
+  try {
+    const res = await fetch("/api/admin/session");
+    const d = await res.json();
+    state.admin = !!d.logged_in;
+    state.adminUser = d.username || "";
+  } catch {
+    state.admin = false;
+    state.adminUser = "";
+  }
+  el["admin-user-name"].textContent = state.adminUser ? `（${state.adminUser}）` : "";
+}
+
+async function adminLogin(e) {
+  e.preventDefault();
+  const username = el["admin-user-input"].value.trim();
+  const password = el["admin-pass-input"].value;
+  if (!username || !password) {
+    renderAdminLogin("请填写账号和密码");
+    return;
+  }
+  el["admin-login-btn"].disabled = true;
+  try {
+    const res = await fetch("/api/admin/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      renderAdminLogin(d.detail || "登录失败");
+      return;
+    }
+    el["admin-pass-input"].value = "";
+    renderAdminLogin("");
+    await loadAdminSession();
+    activateTab(); // 登录成功后把当前后台 Tab 的内容渲染出来
+    showToast("已进入后台管理");
+  } catch (err) {
+    renderAdminLogin(err.message);
+  } finally {
+    el["admin-login-btn"].disabled = false;
+  }
+}
+
+async function adminLogout() {
+  try {
+    await fetch("/api/admin/logout", { method: "POST" });
+  } catch { /* 会话在内存里，退不出去也不影响本地状态重置 */ }
+  state.admin = false;
+  state.adminUser = "";
+  el["admin-user-name"].textContent = "";
+  stopSyncPolling();
+  stopLogPolling();
+  showToast("已退出后台管理");
+  switchTab("movie"); // 后台 Tab 随之隐藏
+}
+
+async function adminChangePassword(e) {
+  e.preventDefault();
+  const oldPwd = el["admin-pwd-old"].value;
+  const newPwd = el["admin-pwd-new"].value;
+  if (newPwd.length < 6) {
+    showToast("新密码至少 6 位");
+    return;
+  }
+  try {
+    const res = await fetch("/api/admin/password", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old: oldPwd, new: newPwd }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(d.detail || "修改失败");
+      return;
+    }
+    el["admin-pwd-old"].value = "";
+    el["admin-pwd-new"].value = "";
+    el["admin-pwd-form"].hidden = true;
+    showToast("密码已更新");
+  } catch (err) {
+    showToast(err.message);
+  }
+}
+
+// 点顶栏「后台管理」：已登录直接进同步页，未登录先进登录卡片
+el["admin-open"].addEventListener("click", () => switchTab("sync"));
+el["admin-login-form"].addEventListener("submit", adminLogin);
+el["admin-logout"].addEventListener("click", adminLogout);
+el["admin-pwd-form"].addEventListener("submit", adminChangePassword);
+el["admin-pwd-toggle"].addEventListener("click", () => {
+  el["admin-pwd-form"].hidden = !el["admin-pwd-form"].hidden;
+});
+
 // 初始化
 // 手机窄屏默认收起筛选条，避免一屏全是标签（桌面端保持展开）
 setFilterCollapsed(window.matchMedia("(max-width: 720px)").matches);
-switchTab("movie", false); // 初始渲染不压历史：第一次按「返回」离开本站才是对的
-refreshSyncUI(false); // 驱动顶栏同步徽标
-history.replaceState({ rh: snapshotState() }, ""); // 给当前历史条目挂上初始状态
+
+(async () => {
+  await loadAdminSession(); // 先确认登录态，后台 Tab 才能正确显隐
+  switchTab("movie", false); // 初始渲染不压历史：第一次按「返回」离开本站才是对的
+  refreshSyncUI(false); // 驱动顶栏同步徽标
+  history.replaceState({ rh: snapshotState() }, ""); // 给当前历史条目挂上初始状态
+})();

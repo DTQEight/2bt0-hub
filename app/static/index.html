@@ -16,10 +16,12 @@
       <button type="button" data-tab="movie">电影</button>
       <button type="button" data-tab="tv">电视剧</button>
       <button type="button" data-tab="local">本地磁力库</button>
-      <button type="button" data-tab="sync">同步</button>
-      <button type="button" data-tab="logs">日志</button>
-      <button type="button" data-tab="cloud115">115转存</button>
+      <!-- 后台管理三个 Tab 登录后才出现（见 app.js 的 activateTab） -->
+      <button type="button" data-tab="sync" class="admin-tab" hidden>同步</button>
+      <button type="button" data-tab="logs" class="admin-tab" hidden>日志</button>
+      <button type="button" data-tab="cloud115" class="admin-tab" hidden>115转存</button>
     </nav>
+    <button type="button" id="admin-open" class="admin-open">后台管理</button>
     <form id="search-form" class="searchbar" role="search" hidden>
       <input id="q" type="search" autocomplete="off" />
       <button type="submit">搜索</button>
@@ -32,6 +34,39 @@
   </header>
 
   <main>
+    <!-- 后台管理工具条：登录后在同步/日志/115 三个 Tab 上方常驻 -->
+    <div id="admin-bar" class="admin-bar" hidden>
+      <span class="admin-title">后台管理</span>
+      <span class="admin-user" id="admin-user-name"></span>
+      <button type="button" id="admin-pwd-toggle" class="btn-sm">修改密码</button>
+      <button type="button" id="admin-logout" class="btn-sm">退出登录</button>
+      <form id="admin-pwd-form" class="admin-pwd-form" hidden>
+        <input id="admin-pwd-old" type="password" placeholder="原密码" autocomplete="current-password" />
+        <input id="admin-pwd-new" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
+        <button type="submit" class="btn-sm">保存</button>
+      </form>
+    </div>
+
+    <!-- 后台管理登录卡片：未登录时点「后台管理」进入 -->
+    <section id="admin-login-view" hidden>
+      <form id="admin-login-form" class="admin-login">
+        <h2>后台管理</h2>
+        <p class="admin-login-tip">同步、日志、115 转存需要账号密码才能进入</p>
+        <label class="field">
+          <span>账号</span>
+          <input id="admin-user-input" autocomplete="username" />
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input id="admin-pass-input" type="password" autocomplete="current-password" />
+        </label>
+        <div class="row">
+          <button type="submit" id="admin-login-btn">登录</button>
+        </div>
+        <p id="admin-login-msg" class="admin-login-msg"></p>
+      </form>
+    </section>
+
     <section id="list-view">
       <div class="filters" id="filters">
         <!-- 只有「本地磁力库」（全部版本列表）需要切板块；电影/电视剧 Tab 已固定各自板块 -->
@@ -49,7 +84,7 @@
           <label class="sort-select" id="sort-select">
             <span class="vt-label">排序</span>
             <select id="sort-by">
-              <option value="last">最新入库</option>
+              <option value="last">最新发布</option>
               <option value="score">评分最高</option>
               <option value="votes">评分人数</option>
               <option value="years">上映时间</option>
