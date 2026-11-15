@@ -451,22 +451,31 @@ def upsert_items(source: str, items) -> int:
     return len({h for h in hashes if h not in existing})
 
 
-def magnet_map_for_dates(dates) -> dict[str, str]:
-    """返回这些发布日期下已入库的 {标题: 磁力链}。
+def magnet_map_for_titles(titles) -> dict[str, str]:
+    """返回这些标题已入库的 {标题: 磁力链}。
 
     站点自 2026-11 起不再在列表里给磁力，每取一条要额外请求一次，且按出口
-    IP 每 50 次就要人工过图形验证码。增量同步时先用这张表跳过已入库的老
-    资源，把额度全留给真正的新条目。
+    IP 每 50 次就要人工过图形验证码。增量同步时先用这张表跳过已入库的资源，
+    把额度全留给真正的新条目。
+
+    按标题而不是按发布日期匹配：站点对 24 小时内的条目返回相对时间
+    （"9小时前"），这个字符串每次抓都在变，且入库时已被换算成绝对日期，
+    拿它当 key 永远查不到——实测电影前 16 页（320 条）全部命中不了，
+    每次增量都把这 320 条重新取一遍磁力，50 次额度用光就撞验证码。
     """
-    dates = [d for d in dict.fromkeys(dates) if d]
-    if not dates:
+    titles = [t for t in dict.fromkeys(titles) if t]
+    if not titles:
         return {}
+    found: dict[str, str] = {}
     with _db() as conn:
-        ph = ",".join("?" * len(dates))
-        rows = conn.execute(
-            f"SELECT title, magnet FROM magnets WHERE published_at IN ({ph})",
-            dates).fetchall()
-    return {r["title"]: r["magnet"] for r in rows if r["title"]}
+        for i in range(0, len(titles), _SAFE_IN_LIMIT):
+            batch = titles[i:i + _SAFE_IN_LIMIT]
+            ph = ",".join("?" * len(batch))
+            for r in conn.execute(
+                    f"SELECT title, magnet FROM magnets WHERE title IN ({ph})", batch):
+                if r["title"] and r["magnet"]:
+                    found.setdefault(r["title"], r["magnet"])
+    return found
 
 
 def blank_movie_id_count(hashes) -> int:

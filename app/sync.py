@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from db import (_hash_of, blank_movie_id_count, clear_sync_progress,
                 get_sync_done, get_sync_progress, get_stats,
-                magnet_map_for_dates, set_sync_done, set_sync_progress,
+                magnet_map_for_titles, set_sync_done, set_sync_progress,
                 upsert_items)
 from movies import movie_detail_manager
 from sources.bt0 import (BASE, SECTIONS, ViewGateRequired, api_get,
@@ -455,8 +455,11 @@ class SyncManager:
         """入库一页，返回本页新增条数（-1 表示入库失败，不计入增量判断）"""
         label = SECTIONS[sc]
         # 站点列表不再带磁力，每行要单独请求一次（50 次/验证码），
-        # 已入库的直接复用库里的磁力，额度全留给新资源
-        known = magnet_map_for_dates([r.get("eztime") or "" for r in rows])
+        # 已入库的直接复用库里的磁力，额度全留给新资源。
+        # 按标题匹配：列表对 24 小时内的条目给的是"9小时前"这种相对时间，
+        # 每次抓都变，按日期查永远落空（详见 db.magnet_map_for_titles）。
+        known = magnet_map_for_titles(
+            [r.get("zname") or r.get("title") or "" for r in rows])
         items = []
         try:
             for r in rows:
