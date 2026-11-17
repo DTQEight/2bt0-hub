@@ -670,6 +670,31 @@ def _mask_secret(value: str) -> str:
     return (value[:2] + "****" + value[-2:]) if len(value) > 8 else "****"
 
 
+def _normalize_callback_url(raw: str) -> str:
+    """校验并补全回调地址。
+
+    企业微信「接收消息」只接受 https + 有效证书的地址；这里只做格式检查，
+    是否真的公网可达要在企微后台保存时才知道。
+    只填域名时自动补上 /wechat/callback。
+    """
+    url = (raw or "").strip()
+    if not url:
+        return ""
+    if not url.lower().startswith("https://"):
+        raise HTTPException(status_code=400,
+                            detail="回调地址必须以 https:// 开头（企业微信不接受 http）")
+    parsed = urlparse(url)
+    if not parsed.netloc or "." not in parsed.netloc:
+        raise HTTPException(status_code=400, detail="回调地址里缺少完整域名")
+    path = parsed.path.rstrip("/")
+    if not path:
+        return url.rstrip("/") + "/wechat/callback"
+    if path != "/wechat/callback":
+        raise HTTPException(status_code=400,
+                            detail="路径必须是 /wechat/callback（服务端只在这个路径上收消息）")
+    return url.replace(path, "/wechat/callback")
+
+
 @app.get("/api/wecom/config")
 async def wecom_config_view() -> dict:
     """企业微信配置（secret 类字段只回掩码，不回明文）"""
@@ -685,7 +710,7 @@ async def wecom_config_view() -> dict:
         "token_masked": _mask_secret(cfg["token"]),
         "has_aeskey": bool(cfg["aeskey"]),
         "aeskey_masked": _mask_secret(cfg["aeskey"]),
-        "forward_url": cfg["forward_url"],
+        "callback_url": cfg["callback_url"],
         "configured": wecom.is_configured(cfg),
         "gate_pending": bool(st.get("gate_key")),
         "gate_page": st.get("gate_page"),
@@ -695,6 +720,8 @@ async def wecom_config_view() -> dict:
 @app.post("/api/wecom/config")
 async def wecom_config_save(body: dict) -> dict:
     """保存企业微信配置。secret 类字段留空表示保持原值。"""
+    body = dict(body)
+    body["callback_url"] = _normalize_callback_url(body.get("callback_url") or "")
     cfg = wecom.save_config(body)
     logger.info("企业微信配置已更新（corpid=%s, agentid=%s）",
                 _mask_secret(cfg["corpid"]), cfg["agentid"])
@@ -824,49 +851,11 @@ async def wecom_callback_message(request: Request) -> PlainTextResponse:
                          name="wecom-gate-code", daemon=True).start()
         reply = f"收到验证码 {content}，正在校验…"
     else:
-        # 非验证码消息（115transfer 的指令/菜单回调）原样转回旧回调，
-        # 两个服务共用同一个企微应用，转发后对方的机器人照常工作
-        forwarded = await _forward_wecom(request, raw, cfg, signature, timestamp, nonce)
-        if forwarded is not None:
-            return forwarded
         reply = ("直接回复图中验证码字符（字母/数字，4-6 位）；\n"
                  "要搜片请发：搜 片名")
     return PlainTextResponse(
         wecom.build_reply_xml(user, corp, reply, crypto),
         media_type="application/xml")
-
-
-async def _forward_wecom(request: Request, raw: bytes, cfg: dict,
-                         signature: str, timestamp: str, nonce: str):
-    """把非验证码消息原样转发给旧回调（默认 115transfer 的 /wechat/callback）。
-
-    Token / EncodingAESKey 相同，转发 query + 原始密文即可，对方验签照常通过。
-    未配置 forward_url 时返回 None（走默认的「请回复验证码」提示）。
-    """
-    url = (cfg.get("forward_url") or "").strip()
-    if not url:
-        return None
-    own = urlparse(url)
-    if (own.path.rstrip("/") == "/wechat/callback"
-            and own.netloc.lower() == request.headers.get("host", "").lower()):
-        return None  # 防自转发死循环（同域名同路径，不论 http/https）
-    try:
-        resp = await asyncio.to_thread(
-            requests.post, url,
-            params={"msg_signature": signature, "timestamp": timestamp, "nonce": nonce},
-            data=raw,
-            headers={"Content-Type": request.headers.get(
-                "content-type", "application/xml")},
-            # 旧回调常在 frp 隧道后面，证书是自签的；消息本身是 AES 密文，
-            # 且签名在对方还会再校验一次，这里跳过证书校验换取可用性
-            verify=False,
-            timeout=4)
-    except Exception as exc:
-        logger.warning("企业微信消息转发失败（%s）：%s", url, exc)
-        return None
-    logger.info("企业微信非验证码消息已转发到旧回调：%s", url)
-    return Response(content=resp.content, status_code=resp.status_code,
-                    media_type=resp.headers.get("content-type", "application/xml"))
 
 
 def _handle_gate_code(code: str, to_user: str) -> None:

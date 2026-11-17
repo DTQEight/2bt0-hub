@@ -7,6 +7,7 @@
     wecom.token       接收消息 Token
     wecom.aeskey      接收消息 EncodingAESKey（43 位）
     wecom.touser      默认接收人（默认 @all，多个用 | 分隔）
+    wecom.callback_url 公网回调地址（仅用于页面展示/复制，服务端不依赖它）
 
 用途：2bt0 同步撞图形验证码时，把验证码图片推到企业微信；人工在企微里
 直接回复数字，/wechat/callback 收到消息后校验并自动续抓（见 main.py）。
@@ -33,7 +34,7 @@ logger = logging.getLogger("resource-hub.wecom")
 
 API = "https://qyapi.weixin.qq.com/cgi-bin"
 _FIELDS = ("corpid", "corpsecret", "agentid", "token", "aeskey", "touser",
-           "forward_url")
+           "callback_url")
 # access_token 失效的错误码：清缓存后重试一次
 _TOKEN_ERR = (40014, 42001, 41001)
 
@@ -57,8 +58,8 @@ def save_config(values: dict) -> dict:
     """
     for key in _FIELDS:
         val = str(values.get(key) or "").strip()
-        if key == "forward_url":
-            db.set_setting("wecom.forward_url", val)  # 允许清空
+        if key == "callback_url":
+            db.set_setting("wecom.callback_url", val)  # 允许清空
             continue
         if not val:
             continue

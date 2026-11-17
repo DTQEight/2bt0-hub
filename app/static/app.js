@@ -1597,29 +1597,30 @@ async function loadWecomCard() {
                value="${escapeHtml(d.touser || "@all")}" />
       </div>
       <div class="api-row">
-        <span class="api-label">旧回调转发</span>
-        <input id="wecom-forward" autocomplete="off"
-               placeholder="可选：非验证码消息转给旧服务，如 115transfer"
-               value="${escapeHtml(d.forward_url || "")}" />
+        <span class="api-label">回调地址</span>
+        <input id="wecom-callback" autocomplete="off"
+               placeholder="https://你的公网域名/wechat/callback"
+               value="${escapeHtml(d.callback_url || "")}" />
       </div>
       <div class="api-row">
         <button type="button" class="act" id="wecom-save">保存</button>
         <button type="button" class="act" id="wecom-test">测试推送</button>
         <button type="button" class="act" id="wecom-gate">推送验证码</button>
+        <button type="button" class="act" id="wecom-copy">复制回调地址</button>
       </div>
       <p class="api-hint" id="wecom-result"></p>
       <p class="api-hint">
-        在企微应用「接收消息」里填 <code>${escapeHtml(location.origin + "/wechat/callback")}</code>
-        （手机/内网地址企微服务器回连不到，需公网可访问）。同步撞验证码时会自动
-        推送验证码图片，直接在企微里回复图中数字即可自动验证并从断点续抓。
-        验证码过期会重新推一张；也可随时点「推送验证码」手动重发。
-        若这里复用了 115transfer 的企业微信应用，把它的回调地址填到「旧回调转发」，
-        非验证码消息会原样转过去，115transfer 的机器人不受影响。
+        把上面的地址填到企微后台「应用 → 接收消息 → 设置 API 接收」，
+        Token / EncodingAESKey 与这里保持一致（保存时企微会回连校验，服务必须已公网可访问）。
+        地址只能是 https 且证书有效，内网 IP 或自建域名企微服务器回连不到。
+        同步撞验证码时会自动推送验证码图片，直接在企微里回复图中字符即可自动验证并从断点续抓；
+        验证码过期会重新推一张，也可随时点「推送验证码」手动重发。
       </p>
     </div>`;
   box.querySelector("#wecom-save").addEventListener("click", saveWecomConfig);
   box.querySelector("#wecom-test").addEventListener("click", testWecom);
   box.querySelector("#wecom-gate").addEventListener("click", pushWecomGate);
+  box.querySelector("#wecom-copy").addEventListener("click", copyWecomCallback);
 }
 
 function _wecomForm() {
@@ -1632,8 +1633,27 @@ function _wecomForm() {
     token: val("#wecom-token"),
     aeskey: val("#wecom-aeskey"),
     touser: val("#wecom-touser"),
-    forward_url: val("#wecom-forward"),
+    callback_url: val("#wecom-callback"),
   };
+}
+
+async function copyWecomCallback() {
+  const box = el["wecom-card"];
+  const input = box.querySelector("#wecom-callback");
+  const out = box.querySelector("#wecom-result");
+  const url = (input.value || "").trim();
+  if (!url) {
+    out.textContent = "还没有填回调地址";
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch (e) {
+    // 局域网 http 下没有 clipboard API，退回 execCommand
+    input.select();
+    document.execCommand("copy");
+  }
+  out.textContent = "已复制，去企微后台「接收消息」粘贴即可";
 }
 
 async function saveWecomConfig() {
