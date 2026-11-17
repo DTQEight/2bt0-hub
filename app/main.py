@@ -16,7 +16,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
 
 import admin_auth
@@ -1209,9 +1210,29 @@ async def cloud115_history_statistics() -> dict:
     return transfer_history.get_statistics()
 
 
+def _static_version() -> str:
+    """静态资源的缓存戳（取 app.js / style.css 的 mtime）。
+
+    Cloudflare 会把 .js/.css 按扩展名缓存 4 小时（max-age=14400），origin 发
+    no-cache 也管不住浏览器里已经存下的旧文件——表现就是"页面有新按钮，点了
+    没反应"。给 URL 带上 mtime，改过才换地址，没改就继续用缓存。
+    """
+    stamp = 0
+    for name in ("app.js", "style.css"):
+        try:
+            stamp = max(stamp, int((STATIC_DIR / name).stat().st_mtime))
+        except OSError:
+            pass
+    return str(stamp)
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> HTMLResponse:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    ver = _static_version()
+    html = html.replace("/static/app.js", f"/static/app.js?v={ver}")
+    html = html.replace("/static/style.css", f"/static/style.css?v={ver}")
+    return HTMLResponse(html)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
