@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -91,7 +92,9 @@ def verify_login(user: str, password: str) -> tuple[bool, str]:
     账号不对也照常算一遍哈希再返回，避免"账号错"比"密码错"快，泄露账号是否存在。
     """
     saved_user = get_username()
-    user_ok = secrets.compare_digest(user, saved_user)
+    # compare_digest 对 str 只接受 ASCII；账号名允许中文，所以统一按 UTF-8 字节比
+    user_ok = secrets.compare_digest(user.encode("utf-8"),
+                                     saved_user.encode("utf-8"))
     salt = db.get_setting("admin.salt", "")
     saved_hash = db.get_setting("admin.hash", "")
     if not salt or not saved_hash:
@@ -113,6 +116,21 @@ def change_password(old: str, new: str) -> tuple[bool, str]:
     db.set_setting("admin.hash", _hash(new, salt))
     logger.info("后台管理密码已更新")
     return True, "密码已更新"
+
+
+def change_username(password: str, new_user: str) -> tuple[bool, str]:
+    """改账号名。要求再验一次当前密码：会话被劫持时也不能直接把主人锁在外面。"""
+    new_user = (new_user or "").strip()
+    if not re.fullmatch(r"\S{2,32}", new_user):
+        return False, "账号需为 2-32 位且不含空格"
+    ok, _ = verify_login(get_username(), password)
+    if not ok:
+        return False, "当前密码不正确"
+    if new_user == get_username():
+        return False, "新账号与当前账号相同"
+    db.set_setting("admin.user", new_user)
+    logger.info("后台管理账号已改名：%s", new_user)
+    return True, "账号已更新，下次登录请使用新账号"
 
 
 # ---- 会话 ----

@@ -38,8 +38,14 @@
     <div id="admin-bar" class="admin-bar" hidden>
       <span class="admin-title">后台管理</span>
       <span class="admin-user" id="admin-user-name"></span>
+      <button type="button" id="admin-user-toggle" class="btn-sm">修改账号</button>
       <button type="button" id="admin-pwd-toggle" class="btn-sm">修改密码</button>
       <button type="button" id="admin-logout" class="btn-sm">退出登录</button>
+      <form id="admin-user-form" class="admin-pwd-form" hidden>
+        <input id="admin-new-user" autocomplete="username" placeholder="新账号（2-32 位，不含空格）" />
+        <input id="admin-user-pwd" type="password" placeholder="当前密码" autocomplete="current-password" />
+        <button type="submit" class="btn-sm">保存</button>
+      </form>
       <form id="admin-pwd-form" class="admin-pwd-form" hidden>
         <input id="admin-pwd-old" type="password" placeholder="原密码" autocomplete="current-password" />
         <input id="admin-pwd-new" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />

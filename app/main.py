@@ -185,6 +185,17 @@ async def admin_change_password(body: dict) -> dict:
     return {"success": True, "message": msg}
 
 
+@app.post("/api/admin/username")
+async def admin_change_username(body: dict) -> dict:
+    """改后台账号名：要带当前密码，防止会话被劫持后直接把主人锁在门外。"""
+    ok, msg = admin_auth.change_username(str(body.get("password") or ""),
+                                         str(body.get("new") or ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg,
+            "username": admin_auth.get_username()}
+
+
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "data_dir": str(DATA_DIR)}

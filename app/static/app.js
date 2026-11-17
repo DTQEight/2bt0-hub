@@ -103,6 +103,7 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "sync-badge", "sync-badge-text", "sync-stop", "toast",
   "admin-open", "admin-bar", "admin-user-name", "admin-logout",
   "admin-pwd-toggle", "admin-pwd-form", "admin-pwd-old", "admin-pwd-new",
+  "admin-user-toggle", "admin-user-form", "admin-new-user", "admin-user-pwd",
   "admin-login-view", "admin-login-form", "admin-user-input", "admin-pass-input",
   "admin-login-btn", "admin-login-msg",
   "cloud115-view",
@@ -2299,6 +2300,33 @@ async function adminChangePassword(e) {
   }
 }
 
+async function adminChangeUsername(e) {
+  e.preventDefault();
+  const newUser = el["admin-new-user"].value.trim();
+  const password = el["admin-user-pwd"].value;
+  if (!newUser || !password) {
+    showToast("请填写新账号和当前密码");
+    return;
+  }
+  try {
+    const res = await fetch("/api/admin/username", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new: newUser, password }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(d.detail || "修改失败");
+      return;
+    }
+    el["admin-user-pwd"].value = "";
+    el["admin-user-form"].hidden = true;
+    await loadAdminSession();  // 顶栏括号里的账号名跟着刷新
+    showToast(d.message || "账号已更新");
+  } catch (err) {
+    showToast(err.message);
+  }
+}
+
 // 点顶栏「后台管理」：已登录直接进同步页，未登录先进登录卡片
 el["admin-open"].addEventListener("click", () => switchTab("sync"));
 el["admin-login-form"].addEventListener("submit", adminLogin);
@@ -2306,6 +2334,17 @@ el["admin-logout"].addEventListener("click", adminLogout);
 el["admin-pwd-form"].addEventListener("submit", adminChangePassword);
 el["admin-pwd-toggle"].addEventListener("click", () => {
   el["admin-pwd-form"].hidden = !el["admin-pwd-form"].hidden;
+  el["admin-user-form"].hidden = true;  // 两个表单互斥，工具条不至于挤成一团
+});
+el["admin-user-form"].addEventListener("submit", adminChangeUsername);
+el["admin-user-toggle"].addEventListener("click", () => {
+  const show = el["admin-user-form"].hidden;
+  el["admin-user-form"].hidden = !show;
+  el["admin-pwd-form"].hidden = true;
+  if (show) {
+    el["admin-new-user"].value = state.adminUser || "";
+    el["admin-new-user"].focus();
+  }
 });
 
 // 初始化
