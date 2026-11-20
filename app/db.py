@@ -652,18 +652,17 @@ def forum_magnet_for_title(title: str) -> str:
     with _db() as conn:
         row = conn.execute(
             "SELECT magnet FROM forum_magnets WHERE norm LIKE ? ESCAPE '\\'"
-            " ORDER BY post_date DESC, tid DESC LIMIT 1", (pattern,)).fetchone()
+            " ORDER BY tid DESC LIMIT 1", (pattern,)).fetchone()
     return row["magnet"] if row else ""
 
 
 def forum_stats() -> dict:
-    """论坛磁力索引概况：条数、最新发帖日期、上次导入时间。"""
+    """论坛磁力索引概况：条数、上次导入时间、源库更新时间。"""
     with _db() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS n, MAX(post_date) AS last_post FROM forum_magnets"
-        ).fetchone()
-    return {"rows": row["n"], "last_post": row["last_post"] or "",
-            "imported_at": get_setting("forum.imported_at", "")}
+        n = conn.execute("SELECT COUNT(*) FROM forum_magnets").fetchone()[0]
+    return {"rows": n,
+            "imported_at": get_setting("forum.imported_at", ""),
+            "source_updated_at": get_setting("forum.source_updated_at", "")}
 
 
 def query_items(page: int = 1, keyword: str = "", category: str = "",

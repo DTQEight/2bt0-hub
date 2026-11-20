@@ -101,7 +101,10 @@ def _rows(conn: sqlite3.Connection):
             continue
         if not isinstance(links, list):
             continue
-        tid = int(r["tid"])
+        try:
+            tid = int(r["tid"])
+        except (TypeError, ValueError):
+            continue
         norm = forum_norm(title)
         m = _SIZE_RE.search(title)
         size = m.group(1) if m else ""
