@@ -367,17 +367,39 @@ def fetch_list(section: int, page: int) -> list[Item]:
     2026-11 起列表只给 zlink='' 占位，磁力要按行 id 再调一次
     recordMagnetView 才拿得到；撞上图形验证码时抛 ViewGateRequired，
     由调用方中断本轮（验证后重跑即可，已入库的不会重复消耗额度）。
+
+    同月起匿名请求一律被拒（「请登录并开通VIP」），电影的磁力改为优先
+    从 115transfer 论坛库按发布名前缀匹配（见 db.forum_magnet_for_title），
+    配了登录 Token 才回退站点接口；电视剧维持原逻辑。
     """
     data = api_get("getTList", {"sc": section, "page": page})
     rows = data.get("list") or []
 
+    forum_lookup = None
+    if section == 1:
+        try:
+            from db import forum_magnet_for_title as forum_lookup  # 延迟导入防循环
+        except Exception:  # 库还没建好时按无论坛库处理
+            forum_lookup = None
+
     items: list[Item] = []
     for r in rows:
         film = movie_ref(r)
-        title = r.get("zname") or r.get("title") or "（无标题）"
+        raw_title = (r.get("zname") or "").strip()
+        title = raw_title or r.get("title") or "（无标题）"
         magnet = (r.get("zlink") or "").strip()
         if not magnet.startswith("magnet:"):
-            magnet = magnet_by_view(str(r.get("id") or ""))
+            if forum_lookup and raw_title:
+                magnet = forum_lookup(raw_title)
+            if not magnet and (section != 1 or _LOGIN_TOKEN):
+                try:
+                    magnet = magnet_by_view(str(r.get("id") or ""))
+                except ViewGateRequired:
+                    raise
+                except SourceError:
+                    if section != 1:
+                        raise
+                    magnet = ""  # 电影：站点拒绝就跳过这条，不影响整页
         if not magnet:
             continue
         items.append(Item(

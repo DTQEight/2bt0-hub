@@ -111,6 +111,22 @@ CREATE TABLE IF NOT EXISTS movie_people (
     name TEXT NOT NULL,
     PRIMARY KEY (movie_id, role, name)
 );
+-- 论坛磁力索引：115transfer 容器监控的论坛帖（forum_monitor.db）导入而来。
+-- 2bt0 站点 2026-11 中旬起对未登录请求拒绝返回磁力，电影磁力改从这里按
+-- 「发布名前缀」匹配（帖子标题 = 2bt0 发布名 + 空格 + 体积）。
+-- norm 是发布名归一化结果（论坛把方括号里的「+」写成「/」），带 NOCASE
+-- 索引，供 LIKE '前缀%' 走索引定位。
+CREATE TABLE IF NOT EXISTS forum_magnets (
+    tid INTEGER NOT NULL,
+    magnet TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    norm TEXT COLLATE NOCASE DEFAULT '',
+    size TEXT DEFAULT '',
+    post_date TEXT DEFAULT '',
+    forum_name TEXT DEFAULT '',
+    fetched_at TEXT DEFAULT '',
+    PRIMARY KEY (tid, magnet)
+);
 CREATE TABLE IF NOT EXISTS sync_state (
     key TEXT PRIMARY KEY,
     last_page INTEGER NOT NULL,
@@ -145,6 +161,8 @@ CREATE INDEX IF NOT EXISTS idx_magnets_cat_movie_group
 DROP INDEX IF EXISTS idx_magnets_cat_movie;  -- 已被上面更宽的索引取代
 -- 演职人员按人名筛选（「点演员看全部作品」）：movie_id 由主键前缀覆盖，无需再建
 CREATE INDEX IF NOT EXISTS idx_people_name ON movie_people(name);
+-- 论坛磁力按发布名前缀匹配（norm 列自带 NOCASE，LIKE '前缀%' 可走索引）
+CREATE INDEX IF NOT EXISTS idx_forum_norm ON forum_magnets(norm);
 -- 索引用途说明：
 --   id               → 无分类过滤时分页"定位本页首行"（覆盖索引，只扫约 10MB；否则深页要全表扫约 300MB）
 --   category         → get_stats() 的 GROUP BY category，以及本地库按分类筛选后分页定位本页首行
@@ -586,6 +604,66 @@ def magnet_by_hash(info_hash: str):
             "SELECT info_hash, magnet, title, size, published_at, category,"
             "       torrent_name, detail_url FROM magnets WHERE info_hash = ?",
             (h,)).fetchone()
+
+
+# ---- 论坛磁力索引（115transfer 论坛监控库导入） ----
+
+# 2bt0 发布名归一化：论坛帖标题把方括号里的「+」写成「/」
+# （如「[国语配音+中文字幕]」↔「[国语配音/中文字幕]」），其余完全一致。
+# 实测最近两周电影原始前缀命中 66.5%，换掉这个符号后约 88%。
+def forum_norm(title: str) -> str:
+    return (title or "").strip().replace("+", "/").replace("＋", "/")
+
+
+_FORUM_LIKE_ESCAPE = str.maketrans({"\\": r"\\", "%": r"\%", "_": r"\_"})
+
+
+def forum_upsert(rows: list[tuple]) -> int:
+    """批量写入论坛磁力（tid, magnet, title, norm, size, post_date, forum_name, fetched_at）。
+
+    主键 (tid, magnet)：同一帖里的磁力可有多条，重复导入时覆盖元数据。
+    """
+    if not rows:
+        return 0
+    with _LOCK:
+        with _db() as conn:
+            conn.executemany(
+                """INSERT INTO forum_magnets
+                       (tid, magnet, title, norm, size, post_date, forum_name, fetched_at)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(tid, magnet) DO UPDATE SET
+                       title=excluded.title, norm=excluded.norm, size=excluded.size,
+                       post_date=excluded.post_date, forum_name=excluded.forum_name,
+                       fetched_at=excluded.fetched_at""",
+                rows,
+            )
+    return len(rows)
+
+
+def forum_magnet_for_title(title: str) -> str:
+    """按 2bt0 发布名从论坛库取磁力（帖子标题以发布名开头即命中）。
+
+    同一发布名有多帖时取最新发布的；没有命中返回空串。
+    """
+    key = forum_norm(title)
+    if not key:
+        return ""
+    pattern = key.translate(_FORUM_LIKE_ESCAPE) + "%"
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT magnet FROM forum_magnets WHERE norm LIKE ? ESCAPE '\\'"
+            " ORDER BY post_date DESC, tid DESC LIMIT 1", (pattern,)).fetchone()
+    return row["magnet"] if row else ""
+
+
+def forum_stats() -> dict:
+    """论坛磁力索引概况：条数、最新发帖日期、上次导入时间。"""
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MAX(post_date) AS last_post FROM forum_magnets"
+        ).fetchone()
+    return {"rows": row["n"], "last_post": row["last_post"] or "",
+            "imported_at": get_setting("forum.imported_at", "")}
 
 
 def query_items(page: int = 1, keyword: str = "", category: str = "",

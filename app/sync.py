@@ -25,12 +25,13 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 from db import (_hash_of, blank_movie_id_count, clear_sync_progress,
+                forum_magnet_for_title,
                 get_sync_done, get_sync_progress, get_stats,
                 magnet_map_for_entries, set_sync_done, set_sync_progress,
                 upsert_items)
 from movies import movie_detail_manager
-from sources.bt0 import (BASE, SECTIONS, ViewGateRequired, api_get,
-                         gate_captcha, magnet_by_view, movie_ref)
+from sources.bt0 import (BASE, SECTIONS, SourceError, ViewGateRequired, api_get,
+                         gate_captcha, get_access_token, magnet_by_view, movie_ref)
 
 logger = logging.getLogger("resource-hub.sync")
 
@@ -467,16 +468,38 @@ class SyncManager:
               BASE + r["aurl"] if r.get("aurl") else "") for r in rows],
             category=label)
         items = []
+        # 电影：站点 2026-11 中旬起匿名取不到磁力（「请登录并开通VIP」），
+        # 改从 115transfer 论坛库按发布名前缀匹配；配了登录 Token 才回退站点
+        # 接口。电视剧维持原逻辑（列表接口仍可取）。
+        use_forum = sc == 1
+        api_ok = (not use_forum) or bool(get_access_token())
+        api_blocked = False  # 站点拒绝一次后本次运行不再逐条空耗请求
+        missing = 0
         try:
             for r in rows:
-                title = r.get("zname") or r.get("title") or ""
+                raw_title = (r.get("zname") or "").strip()
+                title = raw_title or r.get("title") or ""
                 url = BASE + r["aurl"] if r.get("aurl") else ""
                 magnet = (r.get("zlink") or "").strip()
                 if not magnet.startswith("magnet:"):
                     magnet = (known.get((title, url))
-                              or (known_title.get(title) if not url else "")
-                              or magnet_by_view(str(r.get("id") or "")))
+                              or (known_title.get(title) if not url else ""))
+                    # 只拿完整发布名去论坛匹配：干净片名前缀会命中任意版本
+                    if not magnet and use_forum and raw_title:
+                        magnet = forum_magnet_for_title(raw_title)
+                    if not magnet and api_ok and not api_blocked:
+                        try:
+                            magnet = magnet_by_view(str(r.get("id") or ""))
+                        except ViewGateRequired:
+                            raise
+                        except SourceError as exc:
+                            if not use_forum:
+                                raise
+                            api_blocked = True
+                            logger.warning("2bt0 取磁力失败（%s），本次电影同步"
+                                           "后续改用论坛磁力/跳过", exc)
                 if not magnet:
+                    missing += 1
                     continue
                 items.append({
                     "magnet": magnet,
@@ -518,9 +541,11 @@ class SyncManager:
         if page % 10 == 0 or len(rows) < 20 or mode == "update":
             # 增量模式逐页打印：页数少，而且用户需要看到"确实过了这一页"，
             # 否则 4 并发一次性拉完后只在第 10/20 页各打一行，看起来像跳页
+            extra = f"，新增 {new_count}" if mode == "update" else ""
+            if missing:
+                extra += f"，{missing} 条无磁力来源（论坛未收录且未配站点 Token）"
             logger.info("%s 第 %d 页完成，本次已抓 %d 条%s", label, page,
-                        self.state["fetched"],
-                        f"，新增 {new_count}" if mode == "update" else "")
+                        self.state["fetched"], extra)
         return new_count, repaired
 
 

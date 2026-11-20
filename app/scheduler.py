@@ -149,6 +149,15 @@ def run_daily_incremental() -> None:
     手动调用 backup_database()（改动结构或全量重抓之前跑一次）。
     """
     logger.info("每日增量更新开始")
+    # 先刷新论坛磁力库（115transfer 每天 04:00 采集完），电影磁力从这里匹配
+    try:
+        import forum_db
+        info = forum_db.ensure_imported(force=True)
+        if info.get("magnets"):
+            logger.info("论坛磁力库已刷新：%d 条（源库更新至 %s）",
+                        info["magnets"], info.get("source_updated_at") or "?")
+    except Exception:
+        logger.exception("论坛磁力库刷新失败（继续用已有数据）")
     for section in sorted(SECTIONS):
         label = SECTIONS[section]
         if sync_manager.state["running"]:

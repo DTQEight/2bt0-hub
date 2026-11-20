@@ -64,6 +64,15 @@ logger = logging.getLogger("resource-hub")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 init_db()  # 本地磁力库建表
+# 论坛磁力库（115transfer 的 forum_monitor.db）：站点匿名已取不到磁力，
+# 电影磁力改为按发布名前缀从论坛库匹配。首次启动同步导入一次（约几秒），
+# 保证随后的断点自动续抓立即能用上；之后由每日增量任务刷新。
+try:
+    import forum_db
+    if forum_db.available():
+        forum_db.ensure_imported()
+except Exception:
+    logger.exception("论坛磁力库初始化失败（不影响启动）")
 # 对外 API 密钥：首次启动生成并打印一次到日志（之后从库里读，不重复打印）
 get_api_key()
 # 后台管理账号：首次启动创建（密码取 ADMIN_PASSWORD，未设置则随机生成并打印）

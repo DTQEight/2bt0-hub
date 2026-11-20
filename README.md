@@ -36,6 +36,11 @@ docker compose -f docker-compose.nas.yml up -d
 
 镜像公开，无需 `docker login`；支持 `linux/amd64` 与 `linux/arm64`。
 
+> 电影磁力改从 115transfer 的论坛监控库匹配（2bt0 匿名已取不到磁力）：
+> `docker-compose.nas.yml` 默认把 `/volume6/docker/115transfer/data` 只读挂到
+> 容器 `/forum`，路径不同时改环境变量 `FORUM_DATA_DIR`。没有这个库时，
+> 论坛里匹配不到的电影会被跳过（电视剧不受影响）。
+
 ### 本地构建
 
 ```bash
@@ -60,6 +65,7 @@ app/
   posters.py        海报本地化（图床下载 → DATA_DIR/posters）
   quality.py        种子画质分桶（BluRay.Remux.1080p → 「1080P-Remux」等标签）
   scheduler.py      每日定时增量 + 手动数据库备份
+  forum_db.py       115transfer 论坛磁力库导入（forum_magnets 表，电影磁力来源）
   sources/
     base.py         数据源抽象（Item / PageResult / Source）
     bt0.py          2bt0 数据源（getTList / getVideoDetail 等接口）

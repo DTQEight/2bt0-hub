@@ -24,7 +24,12 @@ services:
       # 挑战页换取带当前出口 IP 的 ge_js_validator_18，也可在网页「同步」页
       # 点「自动获取」或在卡片里手动粘贴（存数据库，二者都无需重启容器）
       BT0_COOKIE: ""
+      # 论坛磁力库路径（对应下面 /forum 只读挂载）
+      FORUM_DB: /forum/forum_monitor.db
     volumes:
       # 数据库与日志的持久化目录，可改成 NAS 上的绝对路径
       # 如 /volume1/docker/2bt0-hub/data
       - ./data:/data
+      # 115transfer 的论坛监控库（只读）：电影磁力从这里按发布名前缀匹配。
+      # 没装 115transfer 或不需要时删掉这一行即可（电影会回退站点接口/跳过）。
+      - ${FORUM_DATA_DIR:-/volume6/docker/115transfer/data}:/forum:ro
