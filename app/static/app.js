@@ -43,7 +43,8 @@ const nativeFetch = window.fetch.bind(window);
 
 // 后台管理接口前缀：这些路径只认登录 Cookie（后端 admin_auth.ADMIN_PREFIXES）
 const ADMIN_PREFIXES = ["/api/admin", "/api/sync", "/api/movies", "/api/logs",
-  "/api/schedule", "/api/bt0cookie", "/api/bt0gate", "/api/wecom", "/api/115"];
+  "/api/schedule", "/api/bt0cookie", "/api/bt0token", "/api/bt0gate",
+  "/api/wecom", "/api/115"];
 
 function isAdminUrl(url) {
   const path = String(url || "").split("?")[0];
@@ -99,7 +100,7 @@ for (const id of ["tabs", "q", "search-form", "status", "list", "pager",
   "sort-select", "sort-by",
   "movie-head", "sync-view", "sync-grid",
   "schedule-card", "logs-view", "log-box", "log-scroll", "log-refresh",
-  "api-card", "waf-card", "gate-card", "wecom-card",
+  "api-card", "waf-card", "token-card", "gate-card", "wecom-card",
   "sync-badge", "sync-badge-text", "sync-stop", "toast",
   "admin-open", "admin-bar", "admin-user-name", "admin-logout",
   "admin-pwd-toggle", "admin-pwd-form", "admin-pwd-old", "admin-pwd-new",
@@ -240,6 +241,7 @@ function activateTab() {
       loadSchedule();
       loadApiKey();
       loadWafCookie();
+      loadLoginToken();
       loadGateCard();
       loadWecomCard();
     } else {
@@ -1467,6 +1469,89 @@ async function saveWafCookie() {
     loadWafCookie(); // 重渲染以显示新掩码与来源
   } catch (err) {
     showToast(`保存失败：${err.message}`);
+  }
+}
+
+// ---- 2bt0 登录 Token（站点 2026-11 起匿名不再给磁力）----
+// 浏览器登录后存在 localStorage 的 token，填进来由后端带着请求站点。
+async function loadLoginToken() {
+  const box = el["token-card"];
+  if (!box) return;
+  let data = {};
+  try {
+    const res = await fetch("/api/bt0token");
+    data = await res.json();
+    if (!res.ok) data = { error: data.detail || `HTTP ${res.status}` };
+  } catch (e) {
+    data = { error: e.message };
+  }
+  const status = data.error
+    ? escapeHtml(data.error)
+    : data.has_token
+      ? `已配置：<code>${escapeHtml(data.token_masked)}</code>` +
+        (data.source ? `（来源：${escapeHtml(data.source)}）` : "")
+      : "未配置（站点现在会拒绝匿名取磁力：请登录并开通 VIP）";
+  box.innerHTML = `<div class="panel api-panel">
+      <h3>2bt0 登录 Token</h3>
+      <p class="api-hint">${status}</p>
+      <div class="api-row">
+        <span class="api-label">Token</span>
+        <input id="token-input" type="password" autocomplete="off"
+               placeholder="粘贴浏览器 localStorage 里的 token" />
+        <button type="button" class="act" id="token-save">保存</button>
+        <button type="button" class="act" id="token-test">测试</button>
+      </div>
+      <p class="api-hint" id="token-test-result"></p>
+      <p class="api-hint">
+        站点 2026-11 起未登录请求一律返回「请登录并开通VIP后查看磁力」。
+        在能看磁力的浏览器里登录 2bt0，按 F12 → Application →
+        Local Storage → https://www.2bt0.com → 复制 <code>token</code> 的值
+        粘贴到上面，保存后立即生效、无需重启。点「测试」会真实取一条磁力验证。
+      </p>
+    </div>`;
+  box.querySelector("#token-save").addEventListener("click", saveLoginToken);
+  box.querySelector("#token-test").addEventListener("click", testLoginToken);
+}
+
+async function saveLoginToken() {
+  const input = el["token-card"].querySelector("#token-input");
+  try {
+    const res = await fetch("/api/bt0token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: input.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast(data.message || "Token 已保存");
+    loadLoginToken(); // 重渲染显示新掩码
+  } catch (err) {
+    showToast(`保存失败：${err.message}`);
+  }
+}
+
+async function testLoginToken() {
+  const box = el["token-card"];
+  const input = box.querySelector("#token-input");
+  const btn = box.querySelector("#token-test");
+  const out = box.querySelector("#token-test-result");
+  btn.disabled = true;
+  out.textContent = "正在取一条磁力…";
+  try {
+    const res = await fetch("/api/bt0token/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: input.value.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    out.textContent = data.message || (data.success ? "取磁力正常" : "测试失败");
+    showToast(data.success ? "Token 可用" : "Token 不可用");
+  } catch (err) {
+    out.textContent = `测试失败：${err.message}`;
+    showToast(`测试失败：${err.message}`);
+  } finally {
+    btn.disabled = false;
   }
 }
 

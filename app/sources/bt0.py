@@ -12,7 +12,8 @@
 - 搜索模式（输入关键词）：GET /prod/api/v1/getVideoList?sb=<关键词>
     按片名搜索影片库，返回片名/评分/年份/分类，可跳转官网详情页
 
-API 需带固定 app_id/identity 参数（取自站点前端 JS），无需登录。
+API 需带固定 app_id/identity 参数（取自站点前端 JS）；2026-11 中旬起拉磁力
+还要求登录态，浏览器 localStorage 里的 token 通过 set_access_token 注入。
 """
 
 from __future__ import annotations
@@ -76,6 +77,26 @@ class ViewGateRequired(SourceError):
 # 会带在后续请求上（query 参数 + Authorization 头）。只认「验证过」而不带
 # 这个 token 的话，额度不会恢复——实测验证成功后立刻又被拦就是这个原因。
 _ACCESS_TOKEN = ""
+
+# 登录令牌（浏览器 localStorage 里的 token）。站点 2026-11 中旬起对未登录
+# 请求直接回「请登录并开通VIP后查看磁力」，与匿名额度无关；把浏览器里的
+# 这个 token 填到网页「同步」页即可，请求会带 access_token 参数 + Bearer 头。
+_LOGIN_TOKEN = ""
+
+
+def set_access_token(token: str) -> str:
+    """设置登录令牌；传空字符串即清除。支持直接粘贴 localStorage 的原文
+    （可能带引号）或 `Bearer xxx`。"""
+    global _LOGIN_TOKEN
+    token = (token or "").strip().strip('"').strip("'").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    _LOGIN_TOKEN = token
+    return token
+
+
+def get_access_token() -> str:
+    return _LOGIN_TOKEN
 
 
 # 站点对同一 IP 的放行名额是全局共享的（一次挑战、一次放行），并发请求
@@ -184,7 +205,7 @@ def api_get(endpoint: str, params: dict | None = None,
     with _REQ_LOCK:
         while True:
             try:
-                token = _ACCESS_TOKEN
+                token = _LOGIN_TOKEN or _ACCESS_TOKEN
                 auth = {**HEADERS, "Authorization": f"Bearer {token}"} if token else HEADERS
                 if method == "POST":
                     r = SESSION.post(
@@ -316,6 +337,25 @@ def magnet_by_view(seed_id: str) -> str:
         raise ViewGateRequired(
             f"匿名查看磁力已达上限（{d.get('view_limit') or 50} 次），需要输入图形验证码")
     return ""
+
+
+def test_magnet() -> dict:
+    """用当前令牌真实取一条磁力，给网页「测试」按钮用。
+
+    直接拿电影第 1 页第一条，不消耗额外额度（本来也要抓）。
+    抛 SourceError 时文案即站点返回的拒绝原因（如「请登录并开通VIP」）。
+    """
+    data = api_get("getTList", {"sc": 1, "page": 1})
+    rows = data.get("list") or []
+    if not rows:
+        raise SourceError("列表接口返回空，无法测试磁力")
+    row = rows[0]
+    link = magnet_by_view(str(row.get("id") or ""))
+    if not link:
+        raise SourceError("接口未返回磁力链接（可能仍被站点限制）")
+    return {"id": str(row.get("id") or ""),
+            "title": str(row.get("zname") or row.get("title") or "")[:60],
+            "magnet": link[:48] + "…"}
 
 
 def fetch_list(section: int, page: int) -> list[Item]:

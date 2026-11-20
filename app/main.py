@@ -32,8 +32,9 @@ from movies import movie_detail_manager
 from posters import migrate_to_shards, resolve as resolve_poster
 from scheduler import get_schedule, next_run_at, set_schedule, start_scheduler
 from sources import SourceError, get_source
-from sources.bt0 import (SECTIONS, gate_captcha, get_cookie, set_cookie,
-                         test_connection, verify_gate)
+from sources.bt0 import (SECTIONS, gate_captcha, get_access_token, get_cookie,
+                         set_access_token, set_cookie, test_connection,
+                         test_magnet, verify_gate)
 from sync import sync_manager
 import cloud115
 import transfer_history
@@ -103,6 +104,8 @@ threading.Thread(target=migrate_to_shards, name="poster-migrate", daemon=True).s
 start_scheduler()  # 每日定时增量更新（电影 + 电视剧）
 # WAF Cookie：网页「同步」页保存过的值优先，未设置时回落到环境变量 BT0_COOKIE
 set_cookie(get_setting("bt0.cookie", ""))
+# 登录令牌：站点 2026-11 起对未登录请求拒绝给磁力，网页填过就带上
+set_access_token(get_setting("bt0.token", ""))
 
 app = FastAPI(title="2bt0 资源库", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
@@ -604,6 +607,50 @@ async def bt0_cookie_renew() -> dict:
         "message": (f"已自动获取新 Cookie 并验证通过：{info['count']} 条 / "
                     f"{info['latency_ms']}ms"),
     }
+
+
+@app.get("/api/bt0token")
+async def bt0_token_view() -> dict:
+    """当前登录令牌状态（只回掩码）。站点 2026-11 起匿名拉磁力会被拒。"""
+    token = get_access_token()
+    return {"has_token": bool(token),
+            "token_masked": _mask_cookie(token) if token else "",
+            "source": "网页设置" if get_setting("bt0.token", "") else ""}
+
+
+@app.post("/api/bt0token")
+async def bt0_token_set(body: dict) -> dict:
+    """保存登录令牌（浏览器 localStorage 里的 token），立即生效、无需重启。"""
+    token = (body.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token 不能为空")
+    set_setting("bt0.token", token)
+    saved = set_access_token(token)
+    logger.info("2bt0 登录 Token 已更新（%s）", _mask_cookie(saved))
+    return {"success": True, "message": "登录 Token 已保存并立即生效"}
+
+
+@app.post("/api/bt0token/test")
+async def bt0_token_test(body: dict) -> dict:
+    """用当前（或传入的）令牌真实取一条磁力，确认站点认可登录态。
+
+    传 token 时只用于本次测试，测完还原，不会覆盖已保存的值。
+    """
+    prev = get_access_token()
+    token = (body.get("token") or "").strip()
+    if token:
+        set_access_token(token)
+    try:
+        info = await asyncio.to_thread(test_magnet)
+    except SourceError as exc:
+        return {"success": False, "message": str(exc)}
+    except Exception as exc:  # 网络/解析异常也要给前端可读结果
+        return {"success": False, "message": f"测试失败: {exc}"}
+    finally:
+        if token:
+            set_access_token(prev)
+    return {"success": True, **info,
+            "message": f"取到磁力：{info['title']}"}
 
 
 @app.get("/api/bt0gate")

@@ -39,7 +39,7 @@ PBKDF2_ROUNDS = 200_000
 # 网页读列表接口要先用它换密钥，放进来会导致登录页自己打不开列表。
 ADMIN_PREFIXES = (
     "/api/admin", "/api/sync", "/api/movies", "/api/logs", "/api/schedule",
-    "/api/bt0cookie", "/api/bt0gate", "/api/wecom", "/api/115",
+    "/api/bt0cookie", "/api/bt0token", "/api/bt0gate", "/api/wecom", "/api/115",
 )
 # 登录前后都必须能访问的接口（否则没法登录）
 PUBLIC_ADMIN_PATHS = {"/api/admin/login", "/api/admin/session"}
